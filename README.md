@@ -33,19 +33,18 @@ Git templates need `git` and `tar` on the path.
 
 ## Commands
 
+Six verbs. Three write, three look.
+
 | Command | What it does |
 | --- | --- |
-| `sc plan <template> [dest]` | Show what would happen. Writes nothing. |
-| `sc fork <template> <dest>` | Show the plan, confirm, write. The project remembers its template. |
-| `sc rederive [KEY=VALUE...] [--ref v]` | Recompute the project from its template: newer version, new inputs, or both. Your edits are kept. |
-| `sc status [dest]` | Show a project's template, inputs, and files edited since the last render. |
-| `sc test <template>` | Run a template's golden tests. |
-| `sc tree <template>` | Show a template's inputs and file tree without rendering it. |
-| `sc diff <template>` | Compare two renders under different inputs or golden cases. |
-| `sc dev <template> <scratch>` | Keep a scratch directory rendered while you edit the template. |
-| `sc where [path]` | Say where a directory inside a template ends up in the output. |
-| `sc enter [template]` | Open a shell inside a template with a prompt that says where you are. |
+| `sc plan [tpl] [dir] -v k=v` | What would happen. For a template: the files it makes. Inside a project: what `rederive` would do, and what you've edited. With `-- -v k=v` after it: what differs between two input sets. |
+| `sc fork <tpl> <dir> -v k=v` | Make a project. It remembers its template and inputs in `.sc.toml`. `--watch` keeps it re-rendered while you edit the template. |
+| `sc rederive [k=v...] [--ref v]` | Recompute a project from its template: newer version, new inputs, or both. Your edits are kept. |
 | `sc new <dir>` | Create a starter template. |
+| `sc test <tpl>` | Run a template's golden tests. |
+| `sc where [path]` | What a template becomes: with no path, its inputs and output tree; with a path, where that entry ends up and when. |
+
+Older names still work as hidden aliases: `apply`, `update`, `pull`, `set`, `status`, `tree`, `diff`, `dev`.
 
 A template is a directory, `gh:owner/repo`, `gl:owner/repo`, or any git URL.
 Add `#ref` for a branch, tag or commit, and `--subdir` when the template lives
@@ -112,7 +111,7 @@ sc rederive                          # newest template version, same inputs
 sc rederive --ref v5                 # a specific version
 sc rederive ci=false                 # same version, one input changed
 sc rederive --case minimal           # same version, a golden case's whole input set
-sc status                            # template, version, inputs, and local edits
+sc plan                            # template, version, inputs, and local edits
 ```
 
 For git templates the previous commit is rendered as a common ancestor, so
@@ -132,7 +131,7 @@ remain as aliases.
 
 ## Writing a template
 
-`sc new my-template` writes a starter you can edit, and `sc tree my-template`
+`sc new my-template` writes a starter you can edit, and `sc where my-template`
 shows what any template asks for and how each of its files will be treated.
 The pieces:
 
@@ -156,29 +155,25 @@ the built-in set. An undefined variable is an error, never silent empty text.
 
 A directory with no manifest is a valid template. Every `-v` is then a string.
 
-**Or watch it live.** `sc dev my-template ./scratch -v name=Demo` renders
+**Or watch it live.** `sc fork my-template ./scratch -v name=Demo --watch` renders
 into `./scratch` and re-renders whenever the template changes. The scratch
 tree's `.sc.toml` is the switchboard: set `ci = false` in it and the
 `.github/` directory disappears. Edits inside the scratch tree are
 overwritten, so treat it as a view.
 
-**Or work inside it.** `sc enter my-template` opens a shell at the
-template with `sc` completions loaded, `SC_TEMPLATE` set, and a line above
-the prompt saying what the current directory becomes:
+**Shell setup, optional.** Two lines in your rc give you completions and a
+line above the prompt saying what the current directory becomes, empty
+outside a template:
+
+```
+source <(sc completions zsh)
+_sc_prompt() { SC_WHERE="$(sc where --prompt zsh 2>/dev/null)"; [ -n "$SC_WHERE" ] && SC_WHERE="$SC_WHERE"$'\n'; }
+precmd_functions+=(_sc_prompt); setopt PROMPT_SUBST; PROMPT='${SC_WHERE}'"$PROMPT"
+```
 
 ```
 rust-cli › .github/workflows/  when ci
 ~/my-template/.github/workflows %
-```
-
-`exit` leaves it. For your own prompt, `sc where --prompt zsh` (or `bash`)
-prints that line, colored and escaped for the shell, and nothing outside a
-template.
-
-```
-~/tpl/config@env/prod       rust-cli › -> config by env, env = prod
-~/tpl/.github/workflows     [rust-cli .github/workflows/ when ci]
-~/tpl/.sc/partials          [rust-cli never emitted control]
 ```
 
 ### The manifest
@@ -228,8 +223,8 @@ and a trailing slash covers a directory and everything under it.
 ```
 
 `when` is a template expression over the inputs, so anything `{% if %}`
-accepts works. `sc tree my-template -v ci=false` shows which entries a set
-of inputs turns off, and `sc diff my-template -v ci=false -- -v ci=true`
+accepts works. `sc where my-template -v ci=false` shows which entries a set
+of inputs turns off, and `sc plan my-template -v ci=false -- -v ci=true`
 shows exactly what changes between two sets.
 
 ### Variants
@@ -253,7 +248,7 @@ config@env/              env = "prod" -> config/app.yaml from prod/
 
 Declare the selecting input as a `choice` so a misspelled value is rejected
 instead of silently emitting nothing; `sc plan --verbose` lists groups that
-matched nothing. `sc tree` shows each group's children with the value they
+matched nothing. `sc where` shows each group's children with the value they
 serve and marks the chosen one under `-v`. The `@` is configurable as
 `variant_sep` under `[files]`.
 

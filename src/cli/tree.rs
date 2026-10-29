@@ -23,13 +23,18 @@ pub struct Args {
 
 pub async fn run(a: Args) -> Result {
     let loaded = a.template.load().await?;
-    let inputs = if a.vars.vars.is_empty() {
+    show(&loaded, &a.vars.vars, a.json, a.all)
+}
+
+/// Inputs, rules and the annotated tree of a loaded template.
+pub fn show(loaded: &crate::scaffolding::compose::Loaded, vars: &[(String, String)], json: bool, all: bool) -> Result {
+    let inputs = if vars.is_empty() {
         None
     } else {
-        Some(inputs::resolve_lenient(&loaded.combined_manifest(), &a.vars.vars)?)
+        Some(inputs::resolve_lenient(&loaded.combined_manifest(), vars)?)
     };
-    let d = describe::describe(&loaded, inputs.as_ref())?;
-    if a.json {
+    let d = describe::describe(loaded, inputs.as_ref())?;
+    if json {
         serde_json::to_writer_pretty(std::io::stdout().lock(), &d)?;
         println!();
         return Ok(());
@@ -118,7 +123,7 @@ pub async fn run(a: Args) -> Result {
     // Hide control entries, and directories that held nothing else, as the
     // planner does. Computed back to front so a parent sees its children.
     let mut hidden = vec![false; d.tree.len()];
-    if !a.all {
+    if !all {
         for i in (0..d.tree.len()).rev() {
             let e = &d.tree[i];
             if e.tags.contains(&Tag::Control) {
@@ -135,6 +140,7 @@ pub async fn run(a: Args) -> Result {
         }
     }
     let tree: Vec<_> = d.tree.iter().enumerate().filter(|(i, _)| !hidden[*i]).map(|(_, e)| e).collect();
+    let _ = all;
     // Which depths still have siblings below, for the vertical guides.
     let mut open = [false; 64];
     for (i, e) in tree.iter().enumerate() {

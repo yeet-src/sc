@@ -2,9 +2,9 @@
 //! Each subcommand lives in its own file; `ui` owns all formatting.
 
 mod apply;
+mod completions;
 mod dev;
 mod diff;
-mod enter;
 mod new;
 mod plan;
 mod rederive;
@@ -44,35 +44,33 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Show what a template would make, without writing anything.
+    /// What would happen: for a template and inputs, inside a project, or between two input sets.
     Plan(plan::Args),
-    /// Make a project from a template. The project remembers where it came from.
+    /// Make a project from a template; it remembers where it came from. --watch keeps it in sync.
     Fork(apply::Args),
     /// Recompute a project from its template, newer version or new inputs, keeping your edits.
     Rederive(rederive::Args),
-    /// Show a project's template, inputs, and local edits.
-    Status(status::Args),
-
     /// Create a starter template.
     New(new::Args),
-    /// Show a template's inputs and file tree without rendering it.
-    Tree(tree::Args),
     /// Run a template's golden tests under .sc/tests/.
     Test(test::Args),
-    /// Compare two renders of a template under different inputs or cases.
-    Diff(diff::Args),
-    /// Keep a scratch directory rendered from a template while you edit it.
-    Dev(dev::Args),
-    /// Open a shell inside a template, with a prompt that says where you are.
-    Enter(enter::Args),
-    /// Say where the current directory inside a template ends up in the output.
+    /// What a template, or one path in it, becomes.
     Where(r#where::Args),
 
-    /// Print a shell completion script.
-    Completions(enter::CompletionsArgs),
-    /// How to leave an sc shell.
     #[command(hide = true)]
-    Exit(enter::ExitArgs),
+    Completions(completions::Args),
+    /// Alias of `plan` inside a project.
+    #[command(hide = true)]
+    Status(status::Args),
+    /// Alias of `where` with no path.
+    #[command(hide = true)]
+    Tree(tree::Args),
+    /// Alias of `plan` with two input sets.
+    #[command(hide = true)]
+    Diff(diff::Args),
+    /// Alias of `fork --watch`.
+    #[command(hide = true)]
+    Dev(dev::Args),
     /// Alias of `fork`.
     #[command(hide = true)]
     Apply(apply::Args),
@@ -96,26 +94,17 @@ A project is render(template, inputs) plus your edits. Inputs live in the
 project's .sc.toml; files you never touched follow the template, files you
 edited are yours.
 
-Use a template:
-  plan         show what a template would make, without writing anything
-  fork         make a project from a template; it remembers where it came from
-  rederive     recompute a project from its template, newer version or new inputs, keeping your edits
-  status       show a project's template, inputs, and local edits
+  plan       what would happen: a template with inputs, a project, or two input sets (-- -v ...)
+  fork       make a project from a template; it remembers where it came from (--watch: keep in sync)
+  rederive   recompute a project from its template, newer version or new inputs, keeping your edits
+  new        create a starter template
+  test       run a template's golden tests
+  where      what a template, or one path in it, becomes
 
-Make a template:
-  new          create a starter template
-  tree         show a template's inputs and file tree without rendering it
-  test         run a template's golden tests
-  diff         compare two renders under different inputs or cases
-  dev          keep a scratch directory rendered while you edit
-  enter        open a shell inside a template with a prompt that says where you are
-  where        say where a directory inside a template ends up in the output
-
-Other:
-  completions  print a shell completion script
-  help         print this message or the help of a subcommand
+Three write (fork, rederive, new); three look. `sc <command> --help` for flags.
 
 {options}{after-help}";
+
 /// Arguments shared by every command that takes a template spec.
 #[derive(clap::Args)]
 pub struct Template {
@@ -157,16 +146,14 @@ pub async fn main() -> ExitCode {
         Cmd::Rederive(a) => rederive::run(a, rederive::Mode::Auto).await,
         Cmd::Pull(a) | Cmd::Update(a) => rederive::run(a, rederive::Mode::Pull).await,
         Cmd::Set(a) => rederive::run(a, rederive::Mode::Set).await,
-        Cmd::Status(a) => status::run(a).await,
         Cmd::New(a) => new::run(a).await,
-        Cmd::Tree(a) => tree::run(a).await,
         Cmd::Test(a) => test::run(a).await,
+        Cmd::Where(a) => r#where::run(a).await,
+        Cmd::Status(a) => status::run(a).await,
+        Cmd::Tree(a) => tree::run(a).await,
         Cmd::Diff(a) => diff::run(a).await,
         Cmd::Dev(a) => dev::run(a).await,
-        Cmd::Enter(a) => enter::run(a).await,
-        Cmd::Where(a) => r#where::run(a).await,
-        Cmd::Completions(a) => enter::completions(a),
-        Cmd::Exit(a) => enter::exit(a).await,
+        Cmd::Completions(a) => completions::run(a),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

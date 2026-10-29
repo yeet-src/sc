@@ -35,10 +35,15 @@ pub struct Args {
 }
 
 pub async fn run(a: Args) -> Result {
-    let fetch = crate::scaffolding::source::Options { offline: a.template.offline, cache_dir: None };
-    let spec = a.template.template.clone();
-    let scratch = a.scratch.clone();
-    let opts = PlanOptions { allow_shell: a.allow_shell, ..Default::default() };
+    watch(&a.template, &a.scratch, &a.vars.vars, a.allow_shell, a.interval).await
+}
+
+/// Keep `scratch` rendered from the template until Ctrl-C.
+pub async fn watch(t: &Template, scratch: &Path, vars: &[(String, String)], allow_shell: bool, interval: u64) -> Result {
+    let fetch = crate::scaffolding::source::Options { offline: t.offline, cache_dir: None };
+    let spec = t.template.clone();
+    let scratch = scratch.to_path_buf();
+    let opts = PlanOptions { allow_shell, ..Default::default() };
 
     println!(
         "{} {} {} {}  {}",
@@ -49,9 +54,9 @@ pub async fn run(a: Args) -> Result {
         "(edits inside the scratch tree are overwritten; Ctrl-C to stop)".yellow()
     );
     let mut shown = BTreeSet::new();
-    let mut last = render(&spec, &a.template, &scratch, &a.vars.vars, &opts, &fetch, &mut shown).await?;
+    let mut last = render(&spec, t, &scratch, vars, &opts, &fetch, &mut shown).await?;
 
-    let mut ticker = tokio::time::interval(Duration::from_millis(a.interval.max(100)));
+    let mut ticker = tokio::time::interval(Duration::from_millis(interval.max(100)));
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -69,12 +74,12 @@ pub async fn run(a: Args) -> Result {
         let overrides = match Answers::load(&scratch) {
             Ok(ans) => {
                 let mut o = ans.overrides();
-                o.extend(a.vars.vars.iter().cloned());
+                o.extend(vars.iter().cloned());
                 o
             }
-            Err(_) => a.vars.vars.clone(),
+            Err(_) => vars.to_vec(),
         };
-        match render(&spec, &a.template, &scratch, &overrides, &opts, &fetch, &mut shown).await {
+        match render(&spec, t, &scratch, &overrides, &opts, &fetch, &mut shown).await {
             Ok(fp) => last = fp,
             Err(e) => {
                 eprintln!("{} {e}", "error:".red().bold());

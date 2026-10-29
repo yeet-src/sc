@@ -26,6 +26,12 @@ pub async fn run(a: Args) -> Result {
         ..Default::default()
     };
     let p = update::prepare(&a.dest, &opts).await?;
+    print(&p);
+    Ok(())
+}
+
+/// The project header: template, version, inputs, local edits.
+pub fn print(p: &update::Prepared) {
     let t = &p.plan.template;
     let label = |s: &str| format!("{:<9}", s).cyan().bold();
     match (&t.name, &t.git) {
@@ -59,10 +65,6 @@ pub async fn run(a: Args) -> Result {
         }
     }
     if !stale.is_empty() {
-        println!(
-            "  {}",
-            format!("{} file(s) would change if re-rendered now; run `sc rederive --plan-only` to see", stale.len()).magenta()
-        );
+        println!("  {}", format!("{} file(s) would change if rederived now", stale.len()).magenta());
     }
-    Ok(())
 }

@@ -32,11 +32,23 @@ pub struct Args {
 
 pub async fn run(a: Args) -> Result {
     let loaded = a.template.load().await?;
+    compare(&loaded, &a.vars.vars, &a.second, &a.cases, a.allow_shell, a.json).await
+}
+
+/// Render twice and show what differs: by two input sets or by two cases.
+pub async fn compare(
+    loaded: &compose::Loaded,
+    first_vars: &[(String, String)],
+    second_raw: &[String],
+    cases: &[String],
+    allow_shell: bool,
+    json: bool,
+) -> Result {
     let manifest = loaded.combined_manifest();
-    let (first, second, labels) = match a.cases.as_slice() {
+    let (first, second, labels) = match cases {
         [] => {
             let mut second = Vec::new();
-            let mut it = a.second.iter();
+            let mut it = second_raw.iter();
             while let Some(arg) = it.next() {
                 let kv = match arg.strip_prefix("-v").or_else(|| arg.strip_prefix("--var")) {
                     Some("") => it.next().cloned().unwrap_or_default(),
@@ -45,12 +57,12 @@ pub async fn run(a: Args) -> Result {
                 };
                 second.push(inputs::parse_override(&kv)?);
             }
-            (a.vars.vars.clone(), second, ("first".to_string(), "second".to_string()))
+            (first_vars.to_vec(), second, ("first".to_string(), "second".to_string()))
         }
-        [x, y] => (case_inputs(&loaded, x)?, case_inputs(&loaded, y)?, (x.clone(), y.clone())),
+        [x, y] => (case_inputs(loaded, x)?, case_inputs(loaded, y)?, (x.clone(), y.clone())),
         _ => return Err("give exactly two --case names".into()),
     };
-    let opts = PlanOptions { allow_shell: a.allow_shell, ..Default::default() };
+    let opts = PlanOptions { allow_shell, ..Default::default() };
     let render = |overrides: &[(String, String)]| -> Result<Plan> {
         let inputs = inputs::resolve(&manifest, overrides)?;
         Ok(loaded.plan(None, inputs, &opts)?)
@@ -58,7 +70,7 @@ pub async fn run(a: Args) -> Result {
     let (pa, pb) = (render(&first)?, render(&second)?);
     let cmp = compare::compare(&pa, &pb);
 
-    if a.json {
+    if json {
         serde_json::to_writer_pretty(std::io::stdout().lock(), &cmp)?;
         println!();
         return Ok(());

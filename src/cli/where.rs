@@ -6,15 +6,20 @@ use super::{Result, Vars};
 use crate::scaffolding::describe::{self, Tag};
 use crate::scaffolding::{compose, inputs};
 
-/// Say where a directory inside a template ends up in the output. Prints
-/// nothing and exits 0 outside a template, so it is safe in a prompt:
-///
-///   PROMPT='%~ $(sc where --short) %# '        zsh
-///   PS1='\w $(sc where --short) \$ '           bash
+/// What a template becomes. With no path: the whole template, its inputs
+/// and its output tree. With a path: where that directory or file ends up
+/// and under which conditions. With --short or --prompt: one line for the
+/// current directory, empty outside a template, for a shell prompt.
 #[derive(clap::Args)]
 pub struct Args {
-    /// Path to describe; the current directory by default.
+    /// A directory or file inside a template, or a template directory.
     path: Option<PathBuf>,
+    /// Emit the whole-template view as JSON.
+    #[arg(long, short = 'j')]
+    json: bool,
+    /// In the whole-template view, also show control entries.
+    #[arg(long, short = 'a')]
+    all: bool,
     /// Inputs to evaluate conditions and variant choices with.
     #[command(flatten)]
     vars: Vars,
@@ -72,10 +77,18 @@ pub async fn run(a: Args) -> Result {
         None => std::env::current_dir()?,
     };
     let Some(root) = describe::find_template_root(&path) else {
-        return Ok(()); // not in a template: say nothing
+        if short {
+            return Ok(()); // not in a template: say nothing, for prompts
+        }
+        return Err("not inside a template (no sc.toml or .sc/ found); give a template directory".into());
     };
     let rel = path.strip_prefix(&root).unwrap_or(Path::new("")).to_path_buf();
     let loaded = compose::load(&root.display().to_string(), None, &Default::default()).await?;
+
+    // No path and not a prompt line: the whole template.
+    if !short && (a.path.is_none() || rel.as_os_str().is_empty()) {
+        return super::tree::show(&loaded, &a.vars.vars, a.json, a.all);
+    }
     let inputs = if a.vars.vars.is_empty() {
         None
     } else {

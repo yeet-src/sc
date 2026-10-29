@@ -13,7 +13,7 @@ Files you never touched follow the template; files you edited are yours.
 ### Look before you render
 
 ```
-sc tree examples/python-package
+sc where examples/python-package
 ```
 
 ```
@@ -72,7 +72,7 @@ Work in the project for a while. Edit `README.md`, add a dependency to
 
 ```
 cd tools
-sc status
+sc plan
 ```
 
 ```
@@ -131,19 +131,12 @@ template wins. The combination is recorded, so `rederive` applies it again.
 ```
 sc new my-template
 cd my-template
-sc enter
 ```
 
 `sc new` writes a manifest with every section commented, two files, and a
-golden test that already passes. `sc enter` opens a shell whose prompt says
-what the current directory becomes:
-
-```
-my-template › .github/workflows/  when ci
-~/my-template/.github/workflows %
-```
-
-Leave it with `exit`.
+golden test that already passes. Inside the template, `sc where` shows its
+inputs and output tree, and `sc where .github` says what that directory
+becomes and when.
 
 ### Declare inputs
 
@@ -214,7 +207,7 @@ unrendered, for files that contain `{{` of their own.
 Check it without rendering:
 
 ```
-sc tree . -v ci=false
+sc where . -v ci=false
 ```
 
 ### Variants
@@ -233,7 +226,7 @@ match emits nothing (so `license = "none"` works with no file). Directories
 work the same way: `config@env/dev/` and `config@env/prod/`. That's the
 whole mechanism: no declaration, no state, just files you can see.
 
-`sc tree . -v license=MIT` marks the chosen one.
+`sc where . -v license=MIT` marks the chosen one.
 
 ### Lock the output
 
@@ -251,7 +244,7 @@ Commit the expected trees. A template change that alters output fails
 change makes the diff reviewable in git. Compare cases directly:
 
 ```
-sc diff . --case minimal --case default
+sc plan . --case minimal --case default
 ```
 
 ### Hooks
@@ -272,7 +265,7 @@ the `shell()` template function, is refused without `--allow-shell`.
 ### Watch it live
 
 ```
-sc dev . ../scratch -v name=demo
+sc fork . ../scratch -v name=demo --watch
 ```
 
 `../scratch` re-renders whenever you save a template file. Its `.sc.toml`
@@ -291,15 +284,14 @@ tell users to pin them: `gh:you/my-template#v1`.
 
 | I want to | Command |
 | --- | --- |
-| see what a template asks and makes | `sc tree <tpl>` |
+| see what a template asks and makes | `sc where <tpl>` or, inside it, `sc where` |
 | see what would happen | `sc plan <tpl> <dir> -v k=v` |
-| render a project | `sc fork <tpl> <dir> -v k=v` |
-| see what I've edited | `sc status` |
+| make a project | `sc fork <tpl> <dir> -v k=v` |
+| see what I've edited, and what rederive would do | `sc plan` (inside the project) |
 | change inputs | `sc rederive k=v` |
 | take a newer template version | `sc rederive` |
 | combine two templates | `sc fork <tpl> <dir> --with <tpl2>` |
 | start a template | `sc new <dir>` |
-| work inside one | `sc enter <dir>` |
-| compare two input sets | `sc diff <tpl> -v a=1 -- -v a=2` |
+| compare two input sets | `sc plan <tpl> -v a=1 -- -v a=2` |
 | check golden tests | `sc test <tpl>` |
-| keep a rendered tree in sync | `sc dev <tpl> <scratch>` |
+| keep a rendered tree in sync while editing | `sc fork <tpl> <scratch> --watch` |

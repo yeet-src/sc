@@ -33,9 +33,20 @@ pub struct Args {
     /// Do not run `after` hooks.
     #[arg(long)]
     no_hooks: bool,
+    /// Keep the destination rendered as the template changes: re-fork on
+    /// every save, treat its .sc.toml as the switchboard, overwrite edits
+    /// inside it. For working on a template. Ctrl-C to stop.
+    #[arg(long)]
+    watch: bool,
+    /// With --watch: how often to look for changes, in milliseconds.
+    #[arg(long, default_value_t = 500)]
+    interval: u64,
 }
 
 pub async fn run(a: Args) -> Result {
+    if a.watch {
+        return super::dev::watch(&a.template, &a.dest, &a.vars.vars, a.allow_shell, a.interval).await;
+    }
     let loaded = a.template.load().await?;
     let inputs = inputs::resolve(&loaded.combined_manifest(), &a.vars.vars)?;
     let plan = loaded.plan(Some(&a.dest), inputs, &PlanOptions { allow_shell: a.allow_shell, ..Default::default() })?;
