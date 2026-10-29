@@ -1,0 +1,96 @@
+//! Command-line interface: argument definitions, dispatch and error display.
+//! Each subcommand lives in its own file; `ui` owns all formatting.
+
+mod apply;
+mod plan;
+mod test;
+mod ui;
+mod update;
+
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+use clap::{Parser, Subcommand};
+use colored::Colorize;
+
+use crate::{compose, inputs, source};
+
+pub type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+#[derive(Parser)]
+#[command(name = "sc", about = "A scaffolding engine", version)]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Compute and print the operations a template would perform, without
+    /// writing anything.
+    Plan(plan::Args),
+    /// Render a template into a destination directory.
+    Apply(apply::Args),
+    /// Re-apply the template a project was generated from, at its latest
+    /// version, merging template changes with local edits.
+    Update(update::Args),
+    /// Run a template's golden tests under .scaffold/tests/.
+    Test(test::Args),
+}
+
+/// Arguments shared by every command that takes a template spec.
+#[derive(clap::Args)]
+pub struct Template {
+    /// Template: a directory, `gh:owner/repo`, `gl:owner/repo`, or any git
+    /// URL, optionally with `#ref`.
+    template: String,
+    /// Directory inside the repository that holds the template.
+    #[arg(long, value_name = "DIR")]
+    subdir: Option<PathBuf>,
+    /// Use the cached copy of a git template without contacting the remote.
+    #[arg(long)]
+    offline: bool,
+}
+
+impl Template {
+    fn load(&self) -> std::result::Result<compose::Loaded, compose::ComposeError> {
+        compose::load(&self.template, self.subdir.clone(), &source::Options { offline: self.offline, cache_dir: None })
+    }
+}
+
+/// `--var KEY=VALUE`, repeatable.
+#[derive(clap::Args)]
+pub struct Vars {
+    /// Set a template variable. Repeatable.
+    #[arg(long = "var", short = 'v', value_name = "KEY=VALUE", value_parser = inputs::parse_override)]
+    vars: Vec<(String, String)>,
+}
+
+pub fn main() -> ExitCode {
+    let result = match Cli::parse().cmd {
+        Cmd::Plan(a) => plan::run(a),
+        Cmd::Apply(a) => apply::run(a),
+        Cmd::Update(a) => update::run(a),
+        Cmd::Test(a) => test::run(a),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{} {e}", "error:".red().bold());
+            let mut src = std::error::Error::source(&*e);
+            while let Some(s) = src {
+                eprintln!("  {} {s}", "caused by:".dimmed());
+                src = s.source();
+            }
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn announce_hook(h: &crate::plan::PlannedHook) {
+    println!("\n{} {}", "running after hook:".cyan().bold(), h.name.green());
+}
+
+fn aborted() {
+    println!("{}", "Aborted; nothing written.".yellow().bold());
+}

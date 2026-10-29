@@ -1,0 +1,42 @@
+[template]
+name = "rust-cli"
+description = "A minimal Rust command-line application"
+
+[vars.name]
+prompt = "Project name"
+pattern = "[A-Za-z][A-Za-z0-9 _-]*"
+
+[vars.edition]
+type = "choice"
+choices = ["2021", "2024"]
+default = "2024"
+
+[vars.ci]
+type = "bool"
+prompt = "Add a GitHub Actions workflow?"
+default = true
+
+[files]
+exclude = ["*.orig"]
+keep = ["README.md"]
+
+[files.merge]
+"Cargo.toml" = "toml"
+".gitignore" = "append-lines"
+
+[vars.git]
+type = "bool"
+prompt = "Initialise a git repository?"
+default = true
+
+[[hooks]]
+name = "git init"
+phase = "after"
+when = "{{ git }}"
+run = """
+set -e
+if [ ! -d .git ]; then
+  git init -q
+  echo "initialised git repository in $SC_DEST"
+fi
+"""

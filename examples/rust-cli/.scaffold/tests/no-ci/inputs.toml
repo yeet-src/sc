@@ -1,0 +1,3 @@
+name = "bare"
+ci = false
+edition = "2021"

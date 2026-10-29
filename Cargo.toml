@@ -1,0 +1,24 @@
+[package]
+name = "sc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+colored = "3"
+diffy = "0.5"
+clap = { version = "4", features = ["derive"] }
+globset = "0.4"
+heck = "0.5"
+indexmap = { version = "2", features = ["serde"] }
+minijinja = { version = "2", features = ["builtins", "loader", "custom_syntax"] }
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
+similar = "2"
+tempfile = "3"
+thiserror = "2"
+toml = { version = "0.9", features = ["preserve_order"] }
+toml_edit = "0.23"
+
+[dev-dependencies]

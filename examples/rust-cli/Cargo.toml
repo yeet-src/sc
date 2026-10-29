@@ -1,0 +1,6 @@
+[package]
+name = "{{ name | kebab_case }}"
+version = "0.1.0"
+edition = "{{ edition }}"
+
+[dependencies]
