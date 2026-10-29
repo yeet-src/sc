@@ -105,17 +105,20 @@ pub async fn interactive(program: Program<'_>, label: &str, ctx: &Context) -> Re
 }
 
 /// The temp file must outlive the child, so it is returned alongside.
-fn command(program: Program, ctx: &Context) -> Result<(Command, Option<tempfile::NamedTempFile>), ShellError> {
-    let write = |text: &str| -> Result<tempfile::NamedTempFile, ShellError> {
+fn command(program: Program, ctx: &Context) -> Result<(Command, Option<tempfile::TempPath>), ShellError> {
+    // The handle is closed before the child starts: Linux refuses to execute
+    // a file that is still open for writing (ETXTBSY). The path keeps the
+    // file alive until the child has run.
+    let write = |text: &str| -> Result<tempfile::TempPath, ShellError> {
         let mut tmp = tempfile::Builder::new().prefix("sc-hook-").tempfile().map_err(ShellError::Temp)?;
         std::io::Write::write_all(&mut tmp, text.as_bytes()).map_err(ShellError::Temp)?;
-        Ok(tmp)
+        Ok(tmp.into_temp_path())
     };
     let (mut cmd, tmp) = match program {
         Program::Inline { text, shell } => {
             let tmp = write(text)?;
             let mut cmd = Command::new(shell);
-            cmd.arg(tmp.path());
+            cmd.arg(&*tmp);
             (cmd, Some(tmp))
         }
         Program::Script { text } => {
@@ -123,9 +126,9 @@ fn command(program: Program, ctx: &Context) -> Result<(Command, Option<tempfile:
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).map_err(ShellError::Temp)?;
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o700)).map_err(ShellError::Temp)?;
             }
-            (Command::new(tmp.path()), Some(tmp))
+            (Command::new(&*tmp), Some(tmp))
         }
     };
     cmd.current_dir(&ctx.cwd).envs(ctx.env.iter().map(|(k, v)| (k, v)));
