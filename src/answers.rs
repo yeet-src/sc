@@ -65,15 +65,6 @@ impl Answers {
     /// Inputs as `--var`-style overrides, so they resolve through the same
     /// typed path as command-line values.
     pub fn overrides(&self) -> Vec<(String, String)> {
-        self.inputs
-            .iter()
-            .map(|(k, v)| {
-                let s = match v {
-                    toml::Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                (k.clone(), s)
-            })
-            .collect()
+        self.inputs.iter().map(|(k, v)| (k.clone(), crate::inputs::override_text(v))).collect()
     }
 }

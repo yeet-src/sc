@@ -10,6 +10,7 @@ use crate::manifest::{CONTROL_DIR, MANIFEST_FILE};
 
 pub struct Planner<'a> {
     pub root: &'a Path,
+    pub extra_control: &'a [PathBuf],
     pub renderers: Renderers,
     pub dot_prefix: &'a str,
     pub ctx: Value,
@@ -33,7 +34,10 @@ impl Planner<'_> {
         for entry in entries {
             let name = entry.file_name();
             let src_rel = src_rel.join(&name);
-            if src_rel == Path::new(MANIFEST_FILE) || src_rel == Path::new(CONTROL_DIR) {
+            if src_rel == Path::new(MANIFEST_FILE)
+                || src_rel == Path::new(CONTROL_DIR)
+                || self.extra_control.contains(&src_rel)
+            {
                 self.drop(src_rel, DropReason::Control);
                 continue;
             }
@@ -54,12 +58,19 @@ impl Planner<'_> {
                 self.check_symlink(&out_rel, &target);
                 OpKind::Symlink { target }
             } else if ft.is_dir() {
+                let before = self.ops.len();
                 self.walk(&src_rel, &out_rel)?;
+                // A directory that only held control material (a mounted
+                // sub-template, say) is control material itself.
+                if self.ops.len() == before && self.extra_control.iter().any(|c| c.starts_with(&src_rel)) {
+                    self.drop(src_rel, DropReason::Control);
+                    continue;
+                }
                 OpKind::CreateDir
             } else {
                 self.file(&entry.path(), &src_rel, &out_rel)?
             };
-            self.ops.push(Op { template_path: src_rel, path: out_rel, kind, status: Status::Create });
+            self.ops.push(Op { template_path: src_rel, path: out_rel, mount: None, kind, status: Status::Create });
         }
         Ok(())
     }

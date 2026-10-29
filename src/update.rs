@@ -81,7 +81,7 @@ pub fn prepare(dest: &Path, opts: &Options) -> Result<Prepared, UpdateError> {
         }
     }
 
-    let plan_opts = PlanOptions { allow_shell: opts.allow_shell, git: None };
+    let plan_opts = PlanOptions { allow_shell: opts.allow_shell, ..Default::default() };
     let mut plan = loaded.plan(Some(dest), inputs.clone(), &plan_opts)?;
 
     let previous = t.commit.clone();
@@ -105,7 +105,7 @@ fn render_previous(new: &GitInfo, commit: &str, inputs: &Inputs, opts: &Options)
     let src = source::Source::Git { url: new.url.clone(), reference: Some(commit.to_string()), subdir: new.subdir.clone() };
     let fetch = source::Options { offline: true, ..opts.fetch.clone() };
     let loaded = compose::load_resolved(src.resolve(&fetch)?, &fetch, 0)?;
-    let plan_opts = PlanOptions { allow_shell: opts.allow_shell, git: None };
+    let plan_opts = PlanOptions { allow_shell: opts.allow_shell, ..Default::default() };
     Ok(loaded.plan(None, inputs.clone(), &plan_opts)?)
 }
 
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn three_way_merge_keeps_user_edits_and_takes_template_changes() {
         let repo = Repo::new();
-        let v1 = repo.commit(&[("scaffold.toml", "[vars.name]\n"), ("src/main.rs", V1_MAIN), ("untouched.txt", "same\n"), ("mine.txt", "v1\n")], "v1");
+        let v1 = repo.commit(&[("sc.toml", "[vars.name]\n"), ("src/main.rs", V1_MAIN), ("untouched.txt", "same\n"), ("mine.txt", "v1\n")], "v1");
         let cache = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
         apply_first(&repo, dest.path(), cache.path());
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn overlapping_edits_conflict_and_need_overwrite() {
         let repo = Repo::new();
-        repo.commit(&[("scaffold.toml", "[vars.name]\n"), ("f.txt", "line\n")], "v1");
+        repo.commit(&[("sc.toml", "[vars.name]\n"), ("f.txt", "line\n")], "v1");
         let cache = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
         apply_first(&repo, dest.path(), cache.path());
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn ref_override_and_input_changes() {
         let repo = Repo::new();
-        repo.commit(&[("scaffold.toml", "[vars.name]\n"), ("f.txt", "{{ name }}\n")], "v1");
+        repo.commit(&[("sc.toml", "[vars.name]\n"), ("f.txt", "{{ name }}\n")], "v1");
         repo.git(&["tag", "v1"]);
         let cache = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();

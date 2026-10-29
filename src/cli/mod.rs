@@ -2,23 +2,36 @@
 //! Each subcommand lives in its own file; `ui` owns all formatting.
 
 mod apply;
+mod new;
 mod plan;
 mod test;
+mod tree;
 mod ui;
 mod update;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use clap::builder::styling::{AnsiColor, Effects, Styles};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+
+/// Help and error styling, matching the plan output's palette.
+const STYLES: Styles = Styles::styled()
+    .header(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
+    .usage(AnsiColor::Cyan.on_default().effects(Effects::BOLD))
+    .literal(AnsiColor::Green.on_default())
+    .placeholder(AnsiColor::Magenta.on_default())
+    .valid(AnsiColor::Green.on_default())
+    .invalid(AnsiColor::Red.on_default())
+    .error(AnsiColor::Red.on_default().effects(Effects::BOLD));
 
 use crate::{compose, inputs, source};
 
 pub type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser)]
-#[command(name = "sc", about = "A scaffolding engine", version)]
+#[command(name = "sc", about = "Scaffolding engine", version, styles = STYLES)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -34,8 +47,12 @@ enum Cmd {
     /// Re-apply the template a project was generated from, at its latest
     /// version, merging template changes with local edits.
     Update(update::Args),
-    /// Run a template's golden tests under .scaffold/tests/.
+    /// Run a template's golden tests under .sc/tests/.
     Test(test::Args),
+    /// Create a starter template with a commented manifest and a golden test.
+    New(new::Args),
+    /// Show a template's input schema and file tree without rendering it.
+    Tree(tree::Args),
 }
 
 /// Arguments shared by every command that takes a template spec.
@@ -72,6 +89,8 @@ pub fn main() -> ExitCode {
         Cmd::Apply(a) => apply::run(a),
         Cmd::Update(a) => update::run(a),
         Cmd::Test(a) => test::run(a),
+        Cmd::New(a) => new::run(a),
+        Cmd::Tree(a) => tree::run(a),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -1,5 +1,5 @@
-//! Golden tests for templates: `.scaffold/tests/<case>/inputs.toml` holds
-//! the inputs, `.scaffold/tests/<case>/expected/` the output tree the plan
+//! Golden tests for templates: `.sc/tests/<case>/inputs.toml` holds
+//! the inputs, `.sc/tests/<case>/expected/` the output tree the plan
 //! must produce. `sc test` compares, `sc test --update` rewrites.
 
 use std::collections::BTreeMap;
@@ -87,10 +87,7 @@ pub fn run(loaded: &Loaded, only: Option<&str>, update: bool) -> Result<Vec<Case
         let inputs_path = case.join("inputs.toml");
         let text = std::fs::read_to_string(&inputs_path).map_err(io(&inputs_path))?;
         let table: toml::Table = toml::from_str(&text).map_err(|source| TestError::Inputs { case: name.clone(), source })?;
-        let overrides: Vec<(String, String)> = table
-            .into_iter()
-            .map(|(k, v)| (k, match v { toml::Value::String(s) => s, other => other.to_string() }))
-            .collect();
+        let overrides: Vec<(String, String)> = table.into_iter().map(|(k, v)| (k, inputs::override_text(&v))).collect();
         let inputs = inputs::resolve(&manifest, &overrides).map_err(|source| TestError::Resolve { case: name.clone(), source })?;
         let plan = loaded
             .plan(None, inputs, &PlanOptions::default())
@@ -217,11 +214,11 @@ mod tests {
     fn golden_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         for (rel, text) in [
-            ("scaffold.toml", "[vars.name]\n[vars.ci]\ntype = \"bool\"\ndefault = false\n"),
+            ("sc.toml", "[vars.name]\n[vars.ci]\ntype = \"bool\"\ndefault = false\n"),
             ("README.md", "# {{ name }}\n"),
             ("{% if ci %}ci.yml{% endif %}", "on: push\n"),
-            (".scaffold/tests/basic/inputs.toml", "name = \"demo\"\n"),
-            (".scaffold/tests/with-ci/inputs.toml", "name = \"demo\"\nci = true\n"),
+            (".sc/tests/basic/inputs.toml", "name = \"demo\"\n"),
+            (".sc/tests/with-ci/inputs.toml", "name = \"demo\"\nci = true\n"),
         ] {
             let p = dir.path().join(rel);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -235,8 +232,8 @@ mod tests {
         assert!(results.iter().all(|r| !r.passed()));
 
         run(&loaded, None, true).unwrap();
-        assert!(dir.path().join(".scaffold/tests/with-ci/expected/ci.yml").exists());
-        assert!(!dir.path().join(".scaffold/tests/basic/expected/ci.yml").exists());
+        assert!(dir.path().join(".sc/tests/with-ci/expected/ci.yml").exists());
+        assert!(!dir.path().join(".sc/tests/basic/expected/ci.yml").exists());
         let results = run(&loaded, None, false).unwrap();
         assert!(results.iter().all(|r| r.passed()), "{results:?}");
 

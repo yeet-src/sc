@@ -35,7 +35,7 @@ pub struct Args {
 pub fn run(a: Args) -> Result {
     let loaded = a.template.load()?;
     let inputs = inputs::resolve(&loaded.combined_manifest(), &a.vars.vars)?;
-    let plan = loaded.plan(a.dest.as_deref(), inputs, &PlanOptions { allow_shell: a.allow_shell, git: None })?;
+    let plan = loaded.plan(a.dest.as_deref(), inputs, &PlanOptions { allow_shell: a.allow_shell, ..Default::default() })?;
     if a.json {
         serde_json::to_writer_pretty(std::io::stdout().lock(), &plan)?;
         println!();

@@ -38,7 +38,7 @@ pub struct Args {
 pub fn run(a: Args) -> Result {
     let loaded = a.template.load()?;
     let inputs = inputs::resolve(&loaded.combined_manifest(), &a.vars.vars)?;
-    let plan = loaded.plan(Some(&a.dest), inputs, &PlanOptions { allow_shell: a.allow_shell, git: None })?;
+    let plan = loaded.plan(Some(&a.dest), inputs, &PlanOptions { allow_shell: a.allow_shell, ..Default::default() })?;
     if !a.json {
         print_plan(&plan, &Show { contents: false, diff: a.diff, verbose: false });
         if !a.yes && !confirm()? {

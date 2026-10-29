@@ -23,7 +23,7 @@ fn run_shell(dir: &Path, dest: Option<&Path>, overrides: &[(&str, &str)]) -> Res
     let manifest = Manifest::load(dir).unwrap();
     let overrides: Vec<_> = overrides.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let inputs = crate::inputs::resolve(&manifest, &overrides).unwrap();
-    plan(dir, dest, &manifest, inputs, &PlanOptions { allow_shell: true, git: None })
+    plan(dir, dest, &manifest, inputs, &PlanOptions { allow_shell: true, ..Default::default() })
 }
 
 fn paths(plan: &Plan) -> Vec<String> {
@@ -33,13 +33,13 @@ fn paths(plan: &Plan) -> Vec<String> {
 #[test]
 fn renders_paths_and_contents_in_sorted_order() {
     let dir = fixture(&[
-        ("scaffold.toml", b"[vars.name]\ndefault = \"My App\"\n"),
+        ("sc.toml", b"[vars.name]\ndefault = \"My App\"\n"),
         ("{{ name | kebab_case }}/b.txt", b"hello {{ name }}\n"),
         ("{{ name | kebab_case }}/a.txt", b"x"),
         ("README.md", b"# {{ name | title_case }}\n"),
     ]);
     let plan = run(dir.path(), None, &[]).unwrap();
-    assert_eq!(paths(&plan), [".scaffold.toml", "README.md", "my-app", "my-app/a.txt", "my-app/b.txt"]);
+    assert_eq!(paths(&plan), [".sc.toml", "README.md", "my-app", "my-app/a.txt", "my-app/b.txt"]);
     assert_eq!(plan.ops[4].template_path, Path::new("{{ name | kebab_case }}/b.txt"));
     match &plan.ops[4].kind {
         OpKind::WriteFile { content: Content::Text(t), origin: Origin::Rendered, .. } => {
@@ -47,18 +47,18 @@ fn renders_paths_and_contents_in_sorted_order() {
         }
         other => panic!("{other:?}"),
     }
-    assert_eq!(plan.dropped, [Dropped { template_path: "scaffold.toml".into(), reason: DropReason::Control }]);
+    assert_eq!(plan.dropped, [Dropped { template_path: "sc.toml".into(), reason: DropReason::Control }]);
 }
 
 #[test]
 fn empty_path_component_drops_subtree() {
     let dir = fixture(&[
-        ("scaffold.toml", b"[vars.ci]\ntype = \"bool\"\ndefault = false\n"),
+        ("sc.toml", b"[vars.ci]\ntype = \"bool\"\ndefault = false\n"),
         ("{% if ci %}.github{% endif %}/workflows/ci.yml", b"{{ undefined_var }}"),
         ("keep.txt", b"k"),
     ]);
     let plan = run(dir.path(), None, &[]).unwrap();
-    assert_eq!(paths(&plan), [".scaffold.toml", "keep.txt"]);
+    assert_eq!(paths(&plan), [".sc.toml", "keep.txt"]);
     assert!(plan.dropped.iter().any(|d| d.reason == DropReason::EmptyPath));
     let err = run(dir.path(), None, &[("ci", "true")]).unwrap_err();
     assert!(matches!(err, PlanError::Render(_)), "subtree is rendered once enabled");
@@ -67,13 +67,13 @@ fn empty_path_component_drops_subtree() {
 #[test]
 fn raw_and_binary_are_copied_verbatim() {
     let dir = fixture(&[
-        ("scaffold.toml", b"[files]\nraw = [\"charts/**\"]\nexclude = [\"*.orig\"]\n"),
+        ("sc.toml", b"[files]\nraw = [\"charts/**\"]\nexclude = [\"*.orig\"]\n"),
         ("charts/values.yaml", b"x: {{ .Values.x }}\n"),
         ("logo.png", b"\x89PNG\0\0"),
         ("notes.orig", b"{{ broken"),
     ]);
     let plan = run(dir.path(), None, &[]).unwrap();
-    assert_eq!(paths(&plan), [".scaffold.toml", "charts", "charts/values.yaml", "logo.png"]);
+    assert_eq!(paths(&plan), [".sc.toml", "charts", "charts/values.yaml", "logo.png"]);
     assert!(matches!(&plan.ops[2].kind, OpKind::WriteFile { origin: Origin::Raw { rule }, .. } if rule == "charts/**"));
     assert!(matches!(&plan.ops[3].kind, OpKind::WriteFile { origin: Origin::Binary, .. }));
     assert!(plan.dropped.iter().any(|d| d.reason == DropReason::Excluded { rule: "*.orig".into() }));
@@ -82,8 +82,8 @@ fn raw_and_binary_are_copied_verbatim() {
 #[test]
 fn dot_prefix_includes_and_custom_syntax() {
     let dir = fixture(&[
-        ("scaffold.toml", b"[[files.syntax]]\npath = \"charts/**\"\nvariable = [\"[[\", \"]]\"]\n"),
-        (".scaffold/partials/hdr", b"# {{ n }}\n"),
+        ("sc.toml", b"[[files.syntax]]\npath = \"charts/**\"\nvariable = [\"[[\", \"]]\"]\n"),
+        (".sc/partials/hdr", b"# {{ n }}\n"),
         ("dot_github/dot_keep", b""),
         ("dot_", b"not renamed: nothing after the prefix"),
         ("README.md", b"{% include 'partials/hdr' %}body\n"),
@@ -92,7 +92,7 @@ fn dot_prefix_includes_and_custom_syntax() {
     let plan = run(dir.path(), None, &[("n", "N")]).unwrap();
     assert_eq!(
         paths(&plan),
-        [".github", ".github/.keep", ".scaffold.toml", "README.md", "charts", "charts/v.yaml", "dot_"]
+        [".github", ".github/.keep", ".sc.toml", "README.md", "charts", "charts/v.yaml", "dot_"]
     );
     let text = |p: &str| match &plan.ops.iter().find(|o| o.path == Path::new(p)).unwrap().kind {
         OpKind::WriteFile { content: Content::Text(t), .. } => t.clone(),
@@ -100,13 +100,13 @@ fn dot_prefix_includes_and_custom_syntax() {
     };
     assert_eq!(text("README.md"), "# N\nbody\n");
     assert_eq!(text("charts/v.yaml"), "x: {{ .Values.x }} N\n");
-    assert!(plan.dropped.iter().any(|d| d.template_path == Path::new(".scaffold") && d.reason == DropReason::Control));
+    assert!(plan.dropped.iter().any(|d| d.template_path == Path::new(".sc") && d.reason == DropReason::Control));
 }
 
 #[test]
 fn hooks_and_generate_require_allow_shell() {
     let dir = fixture(&[
-        ("scaffold.toml", b"[[hooks]]\nphase = \"before\"\nrun = \"echo '{\\\"from_hook\\\": 7}'\"\n\n[[hooks]]\nphase = \"after\"\nrun = \"echo done\"\nwhen = \"{{ ci }}\"\n\n[[files.generate]]\npath = \"gen/{{ n }}.txt\"\nrun = \"printf 'made %s' \\\"$SC_VAR_N\\\"\"\nonce = true\n"),
+        ("sc.toml", b"[[hooks]]\nphase = \"before\"\nrun = \"echo '{\\\"from_hook\\\": 7}'\"\n\n[[hooks]]\nphase = \"after\"\nrun = \"echo done\"\nwhen = \"{{ ci }}\"\n\n[[files.generate]]\npath = \"gen/{{ n }}.txt\"\nrun = \"printf 'made %s' \\\"$SC_VAR_N\\\"\"\nonce = true\n"),
         ("a.txt", b"{{ from_hook }} {{ shell('echo sh') }}\n"),
     ]);
     let err = run(dir.path(), None, &[("n", "x"), ("ci", "false")]).unwrap_err();
@@ -189,7 +189,7 @@ fn status_against_destination() {
 fn merge_and_keep_rules() {
     let tpl = fixture(&[
         (
-            "scaffold.toml",
+            "sc.toml",
             b"[files]\nkeep = [\"README.md\", \"config/*\"]\n[files.merge]\n\"Cargo.toml\" = \"toml\"\n\".gitignore\" = \"append-lines\"\n",
         ),
         ("README.md", b"template readme"),
@@ -249,7 +249,7 @@ fn symlink_outside_destination_warns() {
 
 #[test]
 fn serializes_to_json() {
-    let dir = fixture(&[("scaffold.toml", b"[vars.n]\ndefault = \"v\"\n"), ("f", b"{{ n }}"), ("b", b"\0")]);
+    let dir = fixture(&[("sc.toml", b"[vars.n]\ndefault = \"v\"\n"), ("f", b"{{ n }}"), ("b", b"\0")]);
     let plan = run(dir.path(), None, &[]).unwrap();
     let OpKind::WriteFile { content: Content::Text(answers), .. } = &plan.ops[0].kind else { panic!() };
     assert!(answers.contains("[inputs]\nn = \"v\"\n"), "{answers}");

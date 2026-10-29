@@ -17,7 +17,7 @@ fn plan_for(tpl: &Path, dest: &Path, vars: &[(&str, &str)]) -> Plan {
     let manifest = Manifest::load(tpl).unwrap();
     let vars: Vec<_> = vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let inputs = crate::inputs::resolve(&manifest, &vars).unwrap();
-    crate::plan::plan(tpl, Some(dest), &manifest, inputs, &crate::plan::PlanOptions { allow_shell: true, git: None }).unwrap()
+    crate::plan::plan(tpl, Some(dest), &manifest, inputs, &crate::plan::PlanOptions { allow_shell: true, ..Default::default() }).unwrap()
 }
 
 fn run(tpl: &Path, dest: &Path, existing: Existing) -> Result<Outcome, ApplyError> {
@@ -25,7 +25,7 @@ fn run(tpl: &Path, dest: &Path, existing: Existing) -> Result<Outcome, ApplyErro
 }
 
 const TPL: &[(&str, &[u8])] = &[
-    ("scaffold.toml", b"[template]\nname = \"t\"\n[vars.name]\n"),
+    ("sc.toml", b"[template]\nname = \"t\"\n[vars.name]\n"),
     ("{{ name }}/main.txt", b"hi {{ name }}\n"),
     ("empty/.keep", b""),
     ("README.md", b"# {{ name }}\n"),
@@ -101,7 +101,7 @@ fn refuses_overlapping_paths() {
 #[test]
 fn merge_writes_and_keep_leaves_alone_regardless_of_policy() {
     let tpl = fixture(&[
-        ("scaffold.toml", b"[files]\nkeep = [\"README.md\"]\n[files.merge]\n\".gitignore\" = \"append-lines\"\n"),
+        ("sc.toml", b"[files]\nkeep = [\"README.md\"]\n[files.merge]\n\".gitignore\" = \"append-lines\"\n"),
         ("README.md", b"template"),
         (".gitignore", b"target/\n"),
     ]);
@@ -121,7 +121,7 @@ fn merge_writes_and_keep_leaves_alone_regardless_of_policy() {
 #[test]
 fn after_hooks_run_in_dest_after_commit() {
     let tpl = fixture(&[
-        ("scaffold.toml", b"[vars.name]\n[[hooks]]\nphase = \"after\"\nrun = \"cat a.txt > hooked-$SC_VAR_NAME.txt\"\n[[hooks]]\nphase = \"after\"\nrun = \"exit 4\"\nwhen = \"{{ name == 'fail' }}\"\n"),
+        ("sc.toml", b"[vars.name]\n[[hooks]]\nphase = \"after\"\nrun = \"cat a.txt > hooked-$SC_VAR_NAME.txt\"\n[[hooks]]\nphase = \"after\"\nrun = \"exit 4\"\nwhen = \"{{ name == 'fail' }}\"\n"),
         ("a.txt", b"{{ name }}"),
     ]);
     let dest = tempfile::tempdir().unwrap();

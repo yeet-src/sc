@@ -20,8 +20,9 @@ pub fn run_after(
     if mode == Hooks::Skip {
         return Ok(());
     }
-    let ctx = shell::Context::new(dest, &plan.inputs, &plan.template.source, Some(dest));
     for hook in plan.hooks.iter().filter(|h| h.phase == Phase::After) {
+        let cwd = dest.join(&hook.cwd);
+        let ctx = shell::Context::new(&cwd, &hook.inputs, &plan.template.source, Some(dest));
         on_hook(hook);
         let result = match mode {
             Hooks::Run => shell::interactive(program(hook), &hook.name, &ctx),

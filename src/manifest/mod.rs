@@ -1,4 +1,4 @@
-//! The template manifest: `scaffold.toml` at the root of a template directory.
+//! The template manifest: `sc.toml` at the root of a template directory.
 //!
 //! The manifest is optional. A bare directory with no manifest is a valid
 //! template whose every text file is rendered and whose variables are supplied
@@ -9,10 +9,12 @@
 
 mod files;
 mod hooks;
+mod mounts;
 mod vars;
 
 pub use files::*;
 pub use hooks::*;
+pub use mounts::*;
 pub use vars::*;
 
 use std::path::Path;
@@ -20,9 +22,9 @@ use std::path::Path;
 use indexmap::IndexMap;
 use serde::Deserialize;
 
-pub const MANIFEST_FILE: &str = "scaffold.toml";
+pub const MANIFEST_FILE: &str = "sc.toml";
 /// Directory holding partials, hook scripts and golden tests. Never emitted.
-pub const CONTROL_DIR: &str = ".scaffold";
+pub const CONTROL_DIR: &str = ".sc";
 
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +43,8 @@ pub struct Manifest {
     /// declared before this template's.
     #[serde(default)]
     pub uses: Vec<Uses>,
+    #[serde(default)]
+    pub mounts: Vec<Mount>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -78,6 +82,8 @@ pub enum ManifestError {
     InvalidMerge { path: String, reason: String },
     #[error("hook #{index}: {reason}")]
     InvalidHook { index: usize, reason: String },
+    #[error("mount `{path}`: {reason}")]
+    InvalidMount { path: String, reason: String },
 }
 
 impl Manifest {
@@ -96,7 +102,7 @@ impl Manifest {
         Manifest { vars, ..self.clone() }
     }
 
-    /// Load `scaffold.toml` from `template_root`, or return the default
+    /// Load `sc.toml` from `template_root`, or return the default
     /// manifest when the file does not exist.
     pub fn load(template_root: &Path) -> Result<Self, ManifestError> {
         let path = template_root.join(MANIFEST_FILE);
@@ -120,9 +126,25 @@ impl Manifest {
                 (Some(_), Some(_)) => return Err(bad("`run` and `script` are mutually exclusive")),
                 (None, None) => return Err(bad("one of `run` or `script` is required")),
                 (None, Some(s)) if Path::new(s).is_absolute() || s.contains("..") => {
-                    return Err(bad("`script` must be a relative path under .scaffold/"));
+                    return Err(bad("`script` must be a relative path under .sc/"));
                 }
                 _ => {}
+            }
+        }
+        for m in &self.mounts {
+            let bad = |reason: &str| ManifestError::InvalidMount { path: m.path.clone(), reason: reason.into() };
+            if m.path.trim().is_empty() {
+                return Err(bad("`path` is empty"));
+            }
+            if m.template.trim().is_empty() {
+                return Err(bad("`template` is empty"));
+            }
+            if let Some(v) = &m.each {
+                match self.vars.get(v) {
+                    Some(spec) if spec.kind == VarKind::List => {}
+                    Some(_) => return Err(bad(&format!("`for = \"{v}\"` must name a list variable"))),
+                    None => return Err(bad(&format!("`for = \"{v}\"` names an undeclared variable"))),
+                }
             }
         }
         for (path, rule) in &self.files.merge {

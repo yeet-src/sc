@@ -18,7 +18,7 @@ pub struct VarSpec {
     pub pattern: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VarKind {
     #[default]
@@ -26,4 +26,7 @@ pub enum VarKind {
     Bool,
     Int,
     Choice,
+    /// A JSON or TOML array, typically of tables; drives `[[mounts]]` with
+    /// `for`, and `{% for %}` loops in templates.
+    List,
 }

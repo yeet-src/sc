@@ -1,0 +1,9 @@
+[vars.name]
+[vars.port]
+type = "int"
+[vars.workspace]
+
+[[hooks]]
+name = "note"
+phase = "after"
+run = "echo \"service $SC_VAR_NAME ready in $(pwd)\""

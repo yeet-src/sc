@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+{%- for s in services %}
+    "services/{{ s.name | kebab_case }}",
+{%- endfor %}
+]

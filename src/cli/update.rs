@@ -9,7 +9,7 @@ use crate::{source, update};
 
 #[derive(clap::Args)]
 pub struct Args {
-    /// Project directory containing a .scaffold.toml answers file.
+    /// Project directory containing a .sc.toml answers file.
     #[arg(default_value = ".")]
     dest: PathBuf,
     /// Move to this branch, tag or commit instead of the recorded ref.

@@ -143,6 +143,19 @@ pub fn print_plan(plan: &Plan, show: &Show) {
         }
     }
 
+    if !plan.mounts.is_empty() {
+        println!("\n{}", "Mounts".cyan().bold());
+        for m in &plan.mounts {
+            println!(
+                "  {}  {} {}  {}",
+                m.path.display().to_string().blue().bold(),
+                "<-".cyan(),
+                m.template.green(),
+                format!("({} ops)", m.ops).magenta()
+            );
+        }
+    }
+
     if !plan.executed.is_empty() {
         println!("\n{}", "Ran while planning".cyan().bold());
         for e in &plan.executed {

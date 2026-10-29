@@ -10,7 +10,7 @@ pub struct Hook {
     pub name: Option<String>,
     /// Inline script text. Exactly one of `run` and `script` is required.
     pub run: Option<String>,
-    /// Path of a script under `.scaffold/`, run via its shebang.
+    /// Path of a script under `.sc/`, run via its shebang.
     pub script: Option<String>,
     /// Interpreter for `run`.
     #[serde(default = "default_shell")]

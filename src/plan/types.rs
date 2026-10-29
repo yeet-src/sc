@@ -22,6 +22,9 @@ pub struct PlanOptions {
     /// Provenance when the template came from git; recorded in the answers
     /// file so `update` can find the same template again.
     pub git: Option<crate::source::GitInfo>,
+    /// Template-relative directories to skip as control material, such as
+    /// sub-templates referenced by `[[mounts]]`.
+    pub extra_control: Vec<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,6 +43,16 @@ pub struct Plan {
     pub hooks: Vec<PlannedHook>,
     /// Commands that ran while planning, in order.
     pub executed: Vec<Executed>,
+    /// Sub-templates mounted into this plan.
+    pub mounts: Vec<MountInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MountInfo {
+    /// Where it landed, relative to the destination.
+    pub path: PathBuf,
+    pub template: String,
+    pub ops: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +62,13 @@ pub struct PlannedHook {
     pub name: String,
     pub text: String,
     pub exec: Exec,
+    /// Working directory for an `after` hook, relative to the destination;
+    /// the mount path for a mounted template's hooks.
+    pub cwd: PathBuf,
+    /// The inputs of the template that declared the hook, exported to it as
+    /// `SC_VAR_*`. A mounted template's hooks see that template's inputs.
+    #[serde(skip)]
+    pub inputs: Inputs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -80,6 +100,9 @@ pub struct Op {
     pub template_path: PathBuf,
     /// Where it lands, relative to the destination.
     pub path: PathBuf,
+    /// The mount this op came through, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mount: Option<PathBuf>,
     pub kind: OpKind,
     pub status: Status,
 }

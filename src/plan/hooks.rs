@@ -1,10 +1,11 @@
 //! Resolving manifest hooks into fully rendered, runnable programs.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use minijinja::Value;
 
 use super::{Exec, PlanError, PlannedHook};
+use crate::inputs::Inputs;
 use crate::manifest::{CONTROL_DIR, Hook};
 use crate::render::Renderer;
 use crate::shell::Program;
@@ -26,7 +27,7 @@ pub fn hook_enabled(h: &Hook, renderer: &Renderer, ctx: &Value) -> Result<bool, 
     Ok(!matches!(v.trim().to_ascii_lowercase().as_str(), "" | "false" | "0" | "no" | "none"))
 }
 
-pub fn resolve_hook(h: &Hook, root: &Path, renderer: &Renderer, ctx: &Value) -> Result<PlannedHook, PlanError> {
+pub fn resolve_hook(h: &Hook, root: &Path, renderer: &Renderer, ctx: &Value, inputs: &Inputs) -> Result<PlannedHook, PlanError> {
     let name = hook_name(h);
     let (raw, exec) = match (&h.run, &h.script) {
         (_, Some(script)) => {
@@ -38,7 +39,7 @@ pub fn resolve_hook(h: &Hook, root: &Path, renderer: &Renderer, ctx: &Value) -> 
         (None, None) => unreachable!("validated by manifest"),
     };
     let text = if h.render { renderer.render(&format!("hook `{name}`"), &raw, ctx)? } else { raw };
-    Ok(PlannedHook { phase: h.phase, name, text, exec })
+    Ok(PlannedHook { phase: h.phase, name, text, exec, cwd: PathBuf::new(), inputs: inputs.clone() })
 }
 
 pub fn program(hook: &PlannedHook) -> Program<'_> {

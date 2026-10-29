@@ -34,7 +34,7 @@ pub struct Renderer {
 
 impl Renderer {
     /// `control_root` is the directory `{% include %}` and `{% import %}`
-    /// names resolve against: the template's `.scaffold/` directory.
+    /// names resolve against: the template's `.sc/` directory.
     pub fn new(control_root: &Path) -> Self {
         Self::build(control_root, None, None).expect("default syntax is valid")
     }
@@ -78,7 +78,7 @@ impl Renderer {
                 .variable_delimiters(s.variable.0.clone(), s.variable.1.clone())
                 .comment_delimiters(s.comment.0.clone(), s.comment.1.clone())
                 .build()
-                .map_err(|e| RenderError { file: "scaffold.toml".into(), line: String::new(), detail: e.to_string() })?;
+                .map_err(|e| RenderError { file: "sc.toml".into(), line: String::new(), detail: e.to_string() })?;
             env.set_syntax(cfg);
         }
         Ok(Self { env })

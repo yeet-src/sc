@@ -111,9 +111,22 @@ fn parse(name: &str, spec: &VarSpec, raw: &str) -> Result<Value, InputError> {
             }
             Value::from(raw)
         }
+        VarKind::List => parse_list(raw).ok_or_else(|| invalid(format!("expected a JSON or TOML array, got `{raw}`")))?,
     };
     check_pattern(name, spec, raw)?;
     Ok(value)
+}
+
+/// Lists arrive as text: JSON first, then TOML (`[{ name = "a" }]`).
+fn parse_list(raw: &str) -> Option<Value> {
+    if let Ok(serde_json::Value::Array(a)) = serde_json::from_str::<serde_json::Value>(raw) {
+        return Some(Value::from_serialize(&a));
+    }
+    let wrapped: toml::Table = toml::from_str(&format!("v = {raw}")).ok()?;
+    match wrapped.get("v") {
+        Some(toml::Value::Array(a)) => Some(Value::from_serialize(a)),
+        _ => None,
+    }
 }
 
 fn from_default(name: &str, spec: &VarSpec, d: &toml::Value) -> Result<Value, InputError> {
@@ -123,6 +136,7 @@ fn from_default(name: &str, spec: &VarSpec, d: &toml::Value) -> Result<Value, In
         (VarKind::Choice, toml::Value::String(s)) => parse(name, spec, s),
         (VarKind::Bool, toml::Value::Boolean(b)) => Ok(Value::from(*b)),
         (VarKind::Int, toml::Value::Integer(i)) => Ok(Value::from(*i)),
+        (VarKind::List, toml::Value::Array(a)) => Ok(Value::from_serialize(a)),
         (kind, other) => Err(invalid(format!("default `{other}` does not match type {kind:?}"))),
     }
 }
@@ -139,6 +153,16 @@ fn check_pattern(name: &str, spec: &VarSpec, raw: &str) -> Result<(), InputError
         }
     }
     Ok(())
+}
+
+/// The text form of a value, suitable as an override: strings as-is,
+/// everything else as JSON so lists and tables round-trip.
+pub fn override_text<T: serde::Serialize>(v: &T) -> String {
+    let json = serde_json::to_value(v).unwrap_or(serde_json::Value::Null);
+    match json {
+        serde_json::Value::String(s) => s,
+        other => other.to_string(),
+    }
 }
 
 /// Parse a `key=value` command-line argument.

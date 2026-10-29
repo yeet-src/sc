@@ -1,0 +1,17 @@
+[template]
+name = "monorepo"
+description = "A workspace with one crate per service"
+
+[vars.name]
+prompt = "Workspace name"
+
+[vars.services]
+type = "list"
+prompt = "Services, as a JSON array of { name, port }"
+default = [{ name = "api", port = 8080 }]
+
+[[mounts]]
+path = "services/{{ item.name | kebab_case }}"
+template = "parts/service"
+for = "services"
+inputs = { name = "{{ item.name }}", port = "{{ item.port }}", workspace = "{{ name }}" }

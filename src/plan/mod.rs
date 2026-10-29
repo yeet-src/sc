@@ -42,7 +42,7 @@ pub use walk::file_mode;
 
 /// Written into the destination so a later run can see which template and
 /// inputs produced it.
-pub const ANSWERS_FILE: &str = ".scaffold.toml";
+pub const ANSWERS_FILE: &str = ".sc.toml";
 
 pub fn plan(
     template_root: &Path,
@@ -75,7 +75,7 @@ pub fn plan(
     }
     for h in before {
         let ctx = shell::Context::new(template_root, &inputs, template_root, dest);
-        let hook = resolve_hook(h, template_root, &plain, &inputs.context())?;
+        let hook = resolve_hook(h, template_root, &plain, &inputs.context(), &inputs)?;
         let what = format!("before hook `{}`", hook.name);
         let out = shell::capture(program(&hook), &hook.name, &ctx).map_err(|source| PlanError::Shell { what: what.clone(), source })?;
         executed.push(Executed { purpose: "before hook".into(), command: hook.name.clone() });
@@ -95,6 +95,7 @@ pub fn plan(
     });
     let mut planner = Planner {
         root: template_root,
+        extra_control: &opts.extra_control,
         renderers: Renderers::new(template_root, manifest, &shell_state)?,
         dot_prefix: &manifest.files.dot_prefix,
         ctx: inputs.context(),
@@ -119,6 +120,7 @@ pub fn plan(
         planner.ops.push(Op {
             template_path: PathBuf::from(format!("generate: {}", g.run)),
             path: out_rel,
+            mount: None,
             kind: OpKind::WriteFile {
                 content: if looks_binary(out.as_bytes()) { Content::Bytes(out.into_bytes()) } else { Content::Text(out) },
                 mode: 0o644,
@@ -133,7 +135,7 @@ pub fn plan(
     let mut hooks = Vec::new();
     for h in &manifest.hooks {
         if h.phase == Phase::After && hook_enabled(h, &planner.renderers.default, &planner.ctx)? {
-            hooks.push(resolve_hook(h, template_root, &planner.renderers.default, &planner.ctx)?);
+            hooks.push(resolve_hook(h, template_root, &planner.renderers.default, &planner.ctx, &inputs)?);
         }
     }
     executed.extend(
@@ -147,6 +149,7 @@ pub fn plan(
     ops.push(Op {
         template_path: PathBuf::from(ANSWERS_FILE),
         path: PathBuf::from(ANSWERS_FILE),
+        mount: None,
         kind: OpKind::WriteFile {
             content: Content::Text(answers_file(template_root, manifest, &inputs, opts.git.as_ref())?),
             mode: 0o644,
@@ -181,6 +184,7 @@ pub fn plan(
         warnings: planner.warnings,
         hooks,
         executed,
+        mounts: Vec::new(),
     })
 }
 
