@@ -11,6 +11,9 @@ pub struct Args {
     /// Emit the description as JSON instead of text.
     #[arg(long)]
     json: bool,
+    /// Also show control entries: the manifest, .sc/, mounted sub-templates.
+    #[arg(long, short = 'a')]
+    all: bool,
 }
 
 pub fn run(a: Args) -> Result {
@@ -102,10 +105,30 @@ pub fn run(a: Args) -> Result {
     println!("\n{}", "Tree".cyan().bold());
     let root = d.source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| ".".into());
     println!("{}", root.blue().bold());
+    // Hide control entries, and directories that held nothing else, as the
+    // planner does. Computed back to front so a parent sees its children.
+    let mut hidden = vec![false; d.tree.len()];
+    if !a.all {
+        for i in (0..d.tree.len()).rev() {
+            let e = &d.tree[i];
+            if e.tags.contains(&Tag::Control) {
+                hidden[i] = true;
+                continue;
+            }
+            if e.kind == EntryKind::Dir {
+                let children: Vec<usize> = (i + 1..d.tree.len())
+                    .take_while(|&j| d.tree[j].depth > e.depth)
+                    .filter(|&j| d.tree[j].depth == e.depth + 1)
+                    .collect();
+                hidden[i] = !children.is_empty() && children.iter().all(|&j| hidden[j]);
+            }
+        }
+    }
+    let tree: Vec<_> = d.tree.iter().enumerate().filter(|(i, _)| !hidden[*i]).map(|(_, e)| e).collect();
     // Which depths still have siblings below, for the vertical guides.
     let mut open = [false; 64];
-    for (i, e) in d.tree.iter().enumerate() {
-        let last = !d.tree[i + 1..].iter().take_while(|x| x.depth >= e.depth).any(|x| x.depth == e.depth);
+    for (i, e) in tree.iter().enumerate() {
+        let last = !tree[i + 1..].iter().take_while(|x| x.depth >= e.depth).any(|x| x.depth == e.depth);
         let prefix: String = open[..e.depth].iter().map(|o| if *o { "│   " } else { "    " }).collect();
         open[e.depth] = !last;
         let branch = if last { "└── " } else { "├── " };
