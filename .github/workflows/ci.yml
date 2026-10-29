@@ -1,0 +1,49 @@
+name: ci
+
+# Build, test and lint every change before it lands. Make the `check` job a
+# required status check on master; it fans out to both platforms the
+# binaries ship for.
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked --all-targets
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Golden tests of the example templates
+        run: |
+          cargo run --locked -q -- test examples/rust-cli
+          cargo run --locked -q -- test examples/monorepo
