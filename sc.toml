@@ -1,0 +1,4 @@
+[vars.name]
+[vars.org]
+prompt = "Org"
+default = "none"
