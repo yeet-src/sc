@@ -1,0 +1,12 @@
+[project]
+name = "{{ name | kebab_case }}"
+version = "0.1.0"
+description = "{{ description }}"
+requires-python = ">={{ python }}"
+{%- if license != "none" %}
+license = "{{ license }}"
+{%- endif %}
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

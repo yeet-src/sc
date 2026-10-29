@@ -1,0 +1,4 @@
+name = "tiny"
+ci = false
+license = "none"
+python = "3.10"

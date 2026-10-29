@@ -27,6 +27,9 @@ pub struct Template {
     pub commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subdir: Option<PathBuf>,
+    /// Templates layered under this one with `--with`, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub with: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

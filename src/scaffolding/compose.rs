@@ -15,8 +15,9 @@ use std::pin::Pin;
 use minijinja::Value;
 
 use crate::scaffolding::inputs::{self, InputError, Inputs};
-use crate::scaffolding::manifest::{CONTROL_DIR, Manifest, ManifestError, Mount};
-use crate::scaffolding::plan::{self, ANSWERS_FILE, MountInfo, Op, OpKind, Plan, PlanError, PlanOptions, Status};
+use crate::scaffolding::manifest::{CONTROL_DIR, Manifest, ManifestError, MergeSpec, Mount};
+use crate::scaffolding::merge::{self, MergeError};
+use crate::scaffolding::plan::{self, ANSWERS_FILE, Content, MountInfo, Op, OpKind, Plan, PlanError, PlanOptions, Status};
 use crate::scaffolding::render::{RenderError, Renderer};
 use crate::scaffolding::source::{self, GitInfo, Resolved, Source, SourceError};
 
@@ -30,6 +31,10 @@ pub struct Loaded {
     pub manifest: Manifest,
     pub git: Option<GitInfo>,
     pub bases: Vec<Loaded>,
+    /// Templates layered under this one from the command line, after
+    /// `bases`. Recorded in the answers file.
+    pub with: Vec<Loaded>,
+    pub with_specs: Vec<String>,
     /// One per `[[mounts]]` entry, in order.
     pub mounted: Vec<Loaded>,
     pub depth: usize,
@@ -71,10 +76,35 @@ pub enum ComposeError {
     ForNotList { path: String, var: String },
     #[error("mount path rendered to `{0}`, which is not a plain relative path")]
     BadMountPath(String),
+    #[error("in template given with --with {spec}: {source}")]
+    InWith {
+        spec: String,
+        #[source]
+        source: Box<ComposeError>,
+    },
+    #[error("merging {path} across layers: {source}")]
+    LayerMerge {
+        path: PathBuf,
+        #[source]
+        source: MergeError,
+    },
 }
 
 pub async fn load(spec: &str, subdir: Option<PathBuf>, fetch: &source::Options) -> Result<Loaded, ComposeError> {
     load_resolved(Source::parse(spec, subdir).resolve(fetch).await?, fetch, 0).await
+}
+
+/// Load `spec` with extra templates layered under it, as if its manifest
+/// listed them in `[[uses]]` after its own entries.
+pub async fn load_with(
+    spec: &str,
+    subdir: Option<PathBuf>,
+    with: &[String],
+    fetch: &source::Options,
+) -> Result<Loaded, ComposeError> {
+    let mut loaded = load(spec, subdir, fetch).await?;
+    loaded.add_with(with, fetch).await?;
+    Ok(loaded)
 }
 
 pub fn load_resolved(
@@ -102,7 +132,7 @@ pub fn load_resolved(
                 .map_err(|e| ComposeError::InMount { path: m.path.clone(), source: Box::new(e) })?;
             mounted.push(sub);
         }
-        Ok(Loaded { root, manifest, git: resolved.git.clone(), bases, mounted, depth, resolved })
+        Ok(Loaded { root, manifest, git: resolved.git.clone(), bases, with: vec![], with_specs: vec![], mounted, depth, resolved })
     })
 }
 
@@ -126,6 +156,49 @@ fn relative_to(root: &Path, spec: &str, subdir: Option<PathBuf>) -> Source {
 }
 
 impl Loaded {
+    /// Layer `specs` under this template. Relative paths are relative to the
+    /// working directory, since they come from the command line.
+    pub async fn add_with(&mut self, specs: &[String], fetch: &source::Options) -> Result<(), ComposeError> {
+        for spec in specs {
+            let layer = load(spec, None, fetch)
+                .await
+                .map_err(|e| ComposeError::InWith { spec: spec.clone(), source: Box::new(e) })?;
+            self.with.push(layer);
+            self.with_specs.push(spec.clone());
+        }
+        Ok(())
+    }
+
+    /// The merge rule this template (or one of its layers, nearest first)
+    /// declares for an output path.
+    fn merge_spec_for(&self, path: &Path) -> Option<MergeSpec> {
+        for (glob, rule) in &self.manifest.files.merge {
+            if globset::Glob::new(glob).ok()?.compile_matcher().is_match(path) {
+                return Some(rule.spec());
+            }
+        }
+        self.with.iter().rev().chain(self.bases.iter().rev()).find_map(|l| l.merge_spec_for(path))
+    }
+
+    /// This template's manifest with every layer's keep and merge rules
+    /// added (nearest layer first, first match wins), for re-checking a
+    /// folded op against the destination.
+    fn rules_manifest(&self) -> Manifest {
+        let mut m = self.manifest.clone();
+        for layer in self.with.iter().rev().chain(self.bases.iter().rev()) {
+            let lm = layer.rules_manifest();
+            for (k, v) in lm.files.merge {
+                m.files.merge.entry(k).or_insert(v);
+            }
+            for k in lm.files.keep {
+                if !m.files.keep.contains(&k) {
+                    m.files.keep.push(k);
+                }
+            }
+        }
+        m
+    }
+
     /// Manifest to resolve inputs against: every layer's variables.
     pub fn combined_manifest(&self) -> Manifest {
         let mut all = Vec::new();
@@ -135,7 +208,7 @@ impl Loaded {
     }
 
     fn collect_manifests<'a>(&'a self, out: &mut Vec<&'a Manifest>) {
-        for b in &self.bases {
+        for b in self.bases.iter().chain(&self.with) {
             b.collect_manifests(out);
         }
         out.push(&self.manifest);
@@ -157,35 +230,44 @@ impl Loaded {
     /// Plan every layer and every mount, folded into one plan.
     pub fn plan(&self, dest: Option<&Path>, inputs: Inputs, opts: &PlanOptions) -> Result<Plan, ComposeError> {
         let mut layers = Vec::new();
-        for b in &self.bases {
-            b.plan_into(dest, &inputs, opts, &mut layers)?;
+        for b in self.bases.iter().chain(&self.with) {
+            layers.push((b, b.plan(dest, inputs.clone(), opts)?));
         }
         let own_opts = PlanOptions {
             allow_shell: opts.allow_shell,
             git: self.git.clone(),
             extra_control: self.local_mount_dirs(),
+            with: self.with_specs.clone(),
         };
         let mut top = plan::plan(&self.root, dest, &self.manifest, inputs.clone(), &own_opts)?;
 
-        // Bases first, this template's ops replacing theirs path by path.
+        // Bases first, each later layer folded over the earlier ones path by
+        // path: merged where a merge rule covers the path, replaced otherwise.
         let mut ops: Vec<Op> = Vec::new();
         let mut base_hooks = Vec::new();
-        for layer in layers {
-            ops.extend(layer.ops.into_iter().filter(|o| o.path != Path::new(ANSWERS_FILE)));
-            top.dropped.splice(0..0, layer.dropped);
-            top.warnings.splice(0..0, layer.warnings);
-            base_hooks.extend(layer.hooks);
-            top.executed.splice(0..0, layer.executed);
-            top.mounts.splice(0..0, layer.mounts);
+        for (layer, plan) in layers {
+            for op in plan.ops.into_iter().filter(|o| o.path != Path::new(ANSWERS_FILE)) {
+                fold(&mut ops, op, layer, dest)?;
+            }
+            top.dropped.splice(0..0, plan.dropped);
+            top.warnings.splice(0..0, plan.warnings);
+            base_hooks.extend(plan.hooks);
+            top.executed.splice(0..0, plan.executed);
+            top.mounts.splice(0..0, plan.mounts);
         }
         for op in std::mem::take(&mut top.ops) {
-            ops.retain(|o| o.path != op.path);
-            ops.push(op);
+            fold(&mut ops, op, self, dest)?;
         }
 
         // Mounts go under this template's ops: the outer template wins.
         let mut mount_hooks = Vec::new();
         for (m, sub) in self.manifest.mounts.iter().zip(&self.mounted) {
+            if let Some(when) = &m.when {
+                let renderer = Renderer::new(&self.root.join(CONTROL_DIR));
+                if !plan::condition_holds(&renderer, when, &inputs.context())? {
+                    continue;
+                }
+            }
             self.expand_mount(m, sub, dest, &inputs, opts, &mut ops, &mut top, &mut mount_hooks)
                 .map_err(|e| ComposeError::InMount { path: m.path.clone(), source: Box::new(e) })?;
         }
@@ -195,11 +277,6 @@ impl Loaded {
         let own_hooks = std::mem::take(&mut top.hooks);
         top.hooks = base_hooks.into_iter().chain(mount_hooks).chain(own_hooks).collect();
         Ok(top)
-    }
-
-    fn plan_into(&self, dest: Option<&Path>, inputs: &Inputs, opts: &PlanOptions, out: &mut Vec<Plan>) -> Result<(), ComposeError> {
-        out.push(self.plan(dest, inputs.clone(), opts)?);
-        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -256,8 +333,18 @@ impl Loaded {
                 }
                 op.path = mount_path.join(&op.path);
                 op.mount = Some(mount_path.clone());
-                if ops.iter().any(|o| o.path == op.path) {
-                    continue; // the outer template already provides this path
+                if let Some(i) = ops.iter().position(|o| o.path == op.path) {
+                    // The outer template already provides this path. It wins,
+                    // unless a merge rule says to combine the two.
+                    let Some(spec) = self.merge_spec_for(&op.path).or_else(|| sub.merge_spec_for(&op.path)) else { continue };
+                    let outer = ops.remove(i);
+                    let combined = merge_ops(op, outer, &spec)?;
+                    let mut combined = combined;
+                    if let Some(d) = dest {
+                        plan::restatus(d, &mut combined, &self.rules_manifest())?;
+                    }
+                    ops.push(combined);
+                    continue;
                 }
                 count += 1;
                 ops.push(op);
@@ -292,6 +379,42 @@ impl Loaded {
     }
 }
 
+/// Add `op` from `layer` to `ops`. An earlier op at the same path is merged
+/// into it when either side declares a merge rule for the path, and the
+/// result is re-checked against the destination; otherwise it is replaced.
+fn fold(ops: &mut Vec<Op>, op: Op, layer: &Loaded, dest: Option<&Path>) -> Result<(), ComposeError> {
+    let Some(i) = ops.iter().position(|o| o.path == op.path) else {
+        ops.push(op);
+        return Ok(());
+    };
+    let earlier = ops.remove(i);
+    match layer.merge_spec_for(&op.path) {
+        Some(spec) => {
+            let mut merged = merge_ops(earlier, op, &spec)?;
+            if let Some(d) = dest {
+                plan::restatus(d, &mut merged, &layer.rules_manifest())?;
+            }
+            ops.push(merged);
+        }
+        None => ops.push(op),
+    }
+    Ok(())
+}
+
+/// `later`'s content merged over `earlier`'s with `spec`, when both are text
+/// files; otherwise `later` as is.
+fn merge_ops(earlier: Op, mut later: Op, spec: &MergeSpec) -> Result<Op, ComposeError> {
+    if let (
+        OpKind::WriteFile { content: Content::Text(base), .. },
+        OpKind::WriteFile { content: Content::Text(over), .. },
+    ) = (&earlier.kind, &mut later.kind)
+    {
+        let merged = merge::merge(spec, base, over).map_err(|source| ComposeError::LayerMerge { path: later.path.clone(), source })?;
+        *over = merged;
+    }
+    Ok(later)
+}
+
 fn dir_status(dest: Option<&Path>, rel: &Path) -> Status {
     let Some(dest) = dest else { return Status::Create };
     match std::fs::symlink_metadata(dest.join(rel)) {
@@ -324,7 +447,7 @@ mod tests {
                 ("base/sc.toml", "[vars.license]\ndefault = \"MIT\"\n[[hooks]]\nphase = \"after\"\nrun = \"echo base\"\n"),
                 ("base/LICENSE", "{{ license }}\n"),
                 ("base/README.md", "base readme for {{ name }}\n"),
-                ("base/dot_gitignore", "target/\n"),
+                ("base/.gitignore", "target/\n"),
                 ("child/sc.toml", "[vars.name]\n[[uses]]\nsource = \"../base\"\n[[hooks]]\nphase = \"after\"\nrun = \"echo child\"\n"),
                 ("child/README.md", "child readme for {{ name }} ({{ license }})\n"),
                 ("child/src/main.rs", "fn main() {}\n"),
@@ -397,6 +520,47 @@ mod tests {
         let mounts: Vec<_> = plan.mounts.iter().map(|m| (m.path.display().to_string(), m.ops)).collect();
         assert_eq!(mounts, [("services/api".into(), 1), ("services/web".into(), 3), ("infra".into(), 2)], "api dir and override come from the outer template");
         assert!(text(".sc.toml").contains("[[inputs.services]]"), "list inputs land in the answers file");
+    }
+
+    #[tokio::test]
+    async fn with_layers_union_inputs_and_merge_across_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture(
+            dir.path(),
+            &[
+                ("ci/sc.toml", "[vars.runner]\ndefault = \"ubuntu-latest\"\n[files.merge]\n\".gitignore\" = \"append-lines\"\n\"Cargo.toml\" = \"toml\"\n"),
+                ("ci/.gitignore", "ci-cache/\n"),
+                ("ci/Cargo.toml", "[workspace.metadata.ci]\nrunner = \"{{ runner }}\"\n"),
+                ("ci/.github/workflows/ci.yml", "runs-on: {{ runner }}\n"),
+                ("project/sc.toml", "[vars.name]\n"),
+                ("project/.gitignore", "target/\n"),
+                ("project/Cargo.toml", "[package]\nname = \"{{ name }}\"\n"),
+                ("project/README.md", "{{ name }} on {{ runner }}\n"),
+            ],
+        );
+        let project = dir.path().join("project").display().to_string();
+        let ci = dir.path().join("ci").display().to_string();
+        let loaded = load_with(&project, None, std::slice::from_ref(&ci), &source::Options::default()).await.unwrap();
+        let manifest = loaded.combined_manifest();
+        assert_eq!(manifest.vars.keys().collect::<Vec<_>>(), ["runner", "name"], "inputs are the union");
+        let inputs = crate::scaffolding::inputs::resolve(&manifest, &[("name".into(), "app".into())]).unwrap();
+        let plan = loaded.plan(None, inputs, &PlanOptions::default()).unwrap();
+        let text = |p: &str| match &plan.ops.iter().find(|o| o.path == Path::new(p)).unwrap().kind {
+            OpKind::WriteFile { content: Content::Text(t), .. } => t.clone(),
+            _ => panic!("{p}"),
+        };
+        assert_eq!(text(".gitignore"), "ci-cache/\ntarget/\n", "merged with the ci layer's rule");
+        assert_eq!(text("Cargo.toml"), "[workspace.metadata.ci]\nrunner = \"ubuntu-latest\"\n\n[package]\nname = \"app\"\n");
+        assert_eq!(text("README.md"), "app on ubuntu-latest\n");
+        assert_eq!(text(".github/workflows/ci.yml"), "runs-on: ubuntu-latest\n");
+        assert!(text(".sc.toml").contains(&format!("with = [\"{ci}\"]")), "answers record the layer");
+
+        // Against a destination the merged content is what gets compared.
+        let dest = tempfile::tempdir().unwrap();
+        fs::write(dest.path().join(".gitignore"), "ci-cache/\ntarget/\n").unwrap();
+        let inputs = crate::scaffolding::inputs::resolve(&manifest, &[("name".into(), "app".into())]).unwrap();
+        let plan = loaded.plan(Some(dest.path()), inputs, &PlanOptions::default()).unwrap();
+        assert_eq!(plan.ops.iter().find(|o| o.path == Path::new(".gitignore")).unwrap().status, Status::Unchanged);
     }
 
     #[tokio::test]

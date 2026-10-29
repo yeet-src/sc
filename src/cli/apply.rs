@@ -15,16 +15,16 @@ pub struct Args {
     #[command(flatten)]
     vars: Vars,
     /// What to do with files that already exist with different content.
-    #[arg(long, value_enum, default_value_t)]
+    #[arg(long, short = 'e', value_enum, default_value_t)]
     existing: Existing,
     /// Show a unified diff for files that would be modified.
-    #[arg(long)]
+    #[arg(long, short = 'd')]
     diff: bool,
     /// Apply without asking for confirmation.
     #[arg(long, short = 'y')]
     yes: bool,
     /// Emit the outcome as JSON instead of text. Implies --yes.
-    #[arg(long, conflicts_with = "diff")]
+    #[arg(long, short = 'j', conflicts_with = "diff")]
     json: bool,
     /// Permit the template to run commands while planning (before hooks,
     /// generate rules, shell()). They are listed in the output.

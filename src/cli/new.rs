@@ -10,7 +10,7 @@ pub struct Args {
     /// Directory to create the template in.
     dir: PathBuf,
     /// Template name for the manifest; defaults to the directory name.
-    #[arg(long)]
+    #[arg(long, short = 'n')]
     name: Option<String>,
 }
 

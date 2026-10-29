@@ -1,0 +1,39 @@
+[template]
+name = "python-package"
+description = "A Python package with tests, optional CI, and a chosen license"
+
+[vars.name]
+prompt = "Package name"
+pattern = "[a-z][a-z0-9_-]*"
+
+[vars.description]
+prompt = "One-line description"
+default = "A small package"
+
+[vars.python]
+type = "choice"
+prompt = "Minimum Python"
+choices = ["3.10", "3.11", "3.12"]
+default = "3.12"
+
+[vars.license]
+type = "choice"
+choices = ["MIT", "Apache-2.0", "none"]
+default = "MIT"
+
+[vars.ci]
+type = "bool"
+prompt = "Add a GitHub Actions workflow?"
+default = true
+
+[tree]
+".github/"      = { when = "ci" }
+"LICENSE"       = { variants = "license" }
+"README.md"     = { keep = true }
+".gitignore"    = { merge = "append-lines" }
+"pyproject.toml" = { merge = "toml" }
+
+[[hooks]]
+name = "git init"
+phase = "after"
+run = "[ -d .git ] || git init -q"

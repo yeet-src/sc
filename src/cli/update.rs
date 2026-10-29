@@ -13,21 +13,21 @@ pub struct Args {
     #[arg(default_value = ".")]
     dest: PathBuf,
     /// Move to this branch, tag or commit instead of the recorded ref.
-    #[arg(long = "ref", value_name = "REF")]
+    #[arg(long = "ref", short = 'r', value_name = "REF")]
     reference: Option<String>,
     #[command(flatten)]
     vars: Vars,
     /// What to do with files that conflict or were modified outside a merge.
-    #[arg(long, value_enum, default_value_t)]
+    #[arg(long, short = 'e', value_enum, default_value_t)]
     existing: Existing,
     /// Show a unified diff for files that would change.
-    #[arg(long)]
+    #[arg(long, short = 'd')]
     diff: bool,
     /// Apply without asking for confirmation.
     #[arg(long, short = 'y')]
     yes: bool,
     /// Only show the plan; write nothing.
-    #[arg(long)]
+    #[arg(long, short = 'p')]
     plan_only: bool,
     /// Permit the template to run commands while planning.
     #[arg(long)]
@@ -36,7 +36,7 @@ pub struct Args {
     #[arg(long)]
     no_hooks: bool,
     /// Use the cached copy of a git template without contacting the remote.
-    #[arg(long)]
+    #[arg(long, short = 'o')]
     offline: bool,
 }
 
@@ -46,6 +46,8 @@ pub async fn run(a: Args) -> Result {
         vars: a.vars.vars,
         allow_shell: a.allow_shell,
         fetch: source::Options { offline: a.offline, cache_dir: None },
+        pin: false,
+        replace_inputs: false,
     };
     let prepared = update::prepare(&a.dest, &opts).await?;
     let short = |c: &str| c[..c.len().min(12)].to_string();

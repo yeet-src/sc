@@ -6,16 +6,23 @@ use minijinja::Value;
 
 use super::rules::{Renderers, Rules};
 use super::{Content, DropReason, Dropped, Op, OpKind, Origin, PlanError, Status, Warning};
-use crate::scaffolding::manifest::{CONTROL_DIR, MANIFEST_FILE};
+use crate::scaffolding::manifest::{CONTROL_DIR, MANIFEST_FILE, variant_stem};
 
 pub struct Planner<'a> {
     pub root: &'a Path,
     pub extra_control: &'a [PathBuf],
     pub renderers: Renderers,
     pub dot_prefix: &'a str,
+    /// Template-relative path (no trailing slash) -> output name.
+    pub rename: &'a indexmap::IndexMap<String, String>,
+    /// Output paths that are variant groups: the working-tree entry there
+    /// (the checked-out symlink) is skipped; the store supplies the content.
+    pub variant_outputs: &'a [PathBuf],
     pub ctx: Value,
     pub exclude: Rules,
     pub raw: Rules,
+    /// `raw` rules matched against output paths.
+    pub raw_out: Rules,
     pub ops: Vec<Op>,
     pub dropped: Vec<Dropped>,
     pub warnings: Vec<Warning>,
@@ -38,6 +45,7 @@ impl Planner<'_> {
                 || src_rel == Path::new(CONTROL_DIR)
                 || src_rel == Path::new(".git")
                 || self.extra_control.contains(&src_rel)
+                || self.variant_outputs.contains(&src_rel)
             {
                 self.drop(src_rel, DropReason::Control);
                 continue;
@@ -47,13 +55,14 @@ impl Planner<'_> {
                 self.drop(src_rel, DropReason::Excluded { rule });
                 continue;
             }
+            let ft = entry.file_type().map_err(io)?;
+
             let Some(out_name) = self.render_component(&src_rel, &name.to_string_lossy())? else {
                 self.drop(src_rel, DropReason::EmptyPath);
                 continue;
             };
             let out_rel = out_rel.join(out_name);
 
-            let ft = entry.file_type().map_err(io)?;
             let kind = if ft.is_symlink() {
                 let target = std::fs::read_link(entry.path()).map_err(io)?;
                 self.check_symlink(&out_rel, &target);
@@ -84,6 +93,50 @@ impl Planner<'_> {
         self.warnings.push(Warning { path: path.to_path_buf(), message: message.into() });
     }
 
+    /// Emit the candidate of variant group `key` (an output path) that
+    /// serves the value of input `var`, from `.sc/variants/<key>/`; nothing
+    /// when no candidate matches.
+    pub fn variant(&mut self, key: &str, var: &str) -> Result<(), PlanError> {
+        let value = self.ctx.get_attr(var).unwrap_or_default();
+        if value.is_undefined() {
+            return Err(PlanError::UnknownVariantInput { group: key.to_string(), var: var.to_string() });
+        }
+        let value = crate::scaffolding::inputs::override_text(&value);
+
+        let store_rel = Path::new(CONTROL_DIR).join("variants").join(key);
+        let abs = self.root.join(&store_rel);
+        let io = |source| PlanError::Io { path: abs.display().to_string(), source };
+        let mut children: Vec<_> = match std::fs::read_dir(&abs) {
+            Ok(rd) => rd.collect::<Result<_, _>>().map_err(io)?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(PlanError::NoVariantStore { group: key.to_string(), store: store_rel.display().to_string() });
+            }
+            Err(e) => return Err(io(e)),
+        };
+        children.sort_by_key(|e| e.file_name());
+        let stem = |e: &std::fs::DirEntry| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) { name } else { variant_stem(&name) }
+        };
+        let Some(chosen) = children.iter().find(|e| stem(e) == value) else {
+            let available = children.iter().map(stem).collect();
+            self.drop(PathBuf::from(key), DropReason::NoVariant { var: var.to_string(), value, available });
+            return Ok(());
+        };
+
+        let out_rel = PathBuf::from(key);
+        let child_rel = store_rel.join(chosen.file_name());
+        let ft = chosen.file_type().map_err(io)?;
+        let kind = if ft.is_dir() {
+            self.walk(&child_rel, &out_rel)?;
+            OpKind::CreateDir
+        } else {
+            self.file(&chosen.path(), &child_rel, &out_rel)?
+        };
+        self.ops.push(Op { template_path: child_rel, path: out_rel, mount: None, kind, status: Status::Create });
+        Ok(())
+    }
+
     /// Render one path component. `None` means "drop this entry".
     fn render_component(&self, src_rel: &Path, component: &str) -> Result<Option<PathBuf>, PlanError> {
         let rendered = if component.contains("{{") || component.contains("{%") {
@@ -95,9 +148,14 @@ impl Planner<'_> {
         if rendered.is_empty() {
             return Ok(None);
         }
-        let rendered = match rendered.strip_prefix(self.dot_prefix) {
-            Some(rest) if !self.dot_prefix.is_empty() && !rest.is_empty() => format!(".{rest}"),
-            _ => rendered,
+        // An explicit rename wins over the dot prefix convention.
+        let key = src_rel.display().to_string();
+        let rendered = match self.rename.get(&key).or_else(|| self.rename.get(&format!("{key}/"))) {
+            Some(to) => to.trim_end_matches('/').to_string(),
+            None => match rendered.strip_prefix(self.dot_prefix) {
+                Some(rest) if !self.dot_prefix.is_empty() && !rest.is_empty() => format!(".{rest}"),
+                _ => rendered,
+            },
         };
         let bad = |reason| PlanError::BadPath {
             template_path: src_rel.display().to_string(),
@@ -120,7 +178,7 @@ impl Planner<'_> {
         let bytes = std::fs::read(abs).map_err(io)?;
         let mode = file_mode(abs).map_err(io)?;
 
-        let (content, origin) = if let Some(rule) = self.raw.matched(src_rel) {
+        let (content, origin) = if let Some(rule) = self.raw.matched(src_rel).or_else(|| self.raw_out.matched(out_rel)) {
             (Content::Bytes(bytes), Origin::Raw { rule: rule.to_string() })
         } else if looks_binary(&bytes) {
             (Content::Bytes(bytes), Origin::Binary)

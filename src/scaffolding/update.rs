@@ -28,6 +28,12 @@ pub struct Options {
     pub vars: Vec<(String, String)>,
     pub allow_shell: bool,
     pub fetch: source::Options,
+    /// Stay on the recorded commit: `set` changes inputs, not the template.
+    /// A local-path template is re-read either way.
+    pub pin: bool,
+    /// `vars` is the complete input set (a golden case): recorded answers
+    /// are not consulted, missing inputs take manifest defaults.
+    pub replace_inputs: bool,
 }
 
 pub struct Prepared {
@@ -35,8 +41,7 @@ pub struct Prepared {
     /// The commit the project was last generated from, when known.
     pub previous: Option<String>,
     /// The loaded template, kept alive while the plan is used.
-    #[allow(dead_code)]
-    loaded: Loaded,
+    pub loaded: Loaded,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -61,18 +66,19 @@ pub async fn prepare(dest: &Path, opts: &Options) -> Result<Prepared, UpdateErro
     let answers = Answers::load(dest)?;
     let t = &answers.template;
     let src = match &t.commit {
-        Some(_) => source::Source::Git {
+        Some(commit) => source::Source::Git {
             url: t.source.clone(),
-            reference: opts.reference.clone().or_else(|| t.reference.clone()),
+            reference: if opts.pin { Some(commit.clone()) } else { opts.reference.clone().or_else(|| t.reference.clone()) },
             subdir: t.subdir.clone(),
         },
         None => source::Source::Local(PathBuf::from(&t.source)),
     };
-    let loaded = compose::load_resolved(src.resolve(&opts.fetch).await?, &opts.fetch, 0).await?;
+    let mut loaded = compose::load_resolved(src.resolve(&opts.fetch).await?, &opts.fetch, 0).await?;
+    loaded.add_with(&t.with, &opts.fetch).await?;
     let manifest = loaded.combined_manifest();
 
     // Answers first, then explicit changes; later entries win in `resolve`.
-    let mut overrides = answers.overrides();
+    let mut overrides = if opts.replace_inputs { Vec::new() } else { answers.overrides() };
     overrides.extend(opts.vars.iter().cloned());
     let mut inputs = inputs::resolve(&manifest, &overrides)?;
     for i in &mut inputs.0 {
@@ -84,28 +90,67 @@ pub async fn prepare(dest: &Path, opts: &Options) -> Result<Prepared, UpdateErro
     let plan_opts = PlanOptions { allow_shell: opts.allow_shell, ..Default::default() };
     let mut plan = loaded.plan(Some(dest), inputs.clone(), &plan_opts)?;
 
+    // The ancestor: what the previous render produced. For a git template
+    // that is the recorded commit with the recorded inputs. For a local
+    // template there is no recorded version, so the template as it is now
+    // with the recorded inputs stands in; exact when only inputs changed.
     let previous = t.commit.clone();
-    if let (Some(old), Some(new)) = (&previous, &loaded.git) {
-        if *old != new.commit {
-            let ancestor = render_previous(new, old, &inputs, opts)
+    let old_inputs = inputs::resolve(&manifest, &answers.overrides()).ok();
+    let ancestor = match (&previous, &loaded.git, &old_inputs) {
+        (Some(old), Some(new), Some(old_inputs)) if *old != new.commit => Some(
+            render_previous(new, old, &t.with, old_inputs, opts)
                 .await
-                .map_err(|e| UpdateError::Previous { commit: old.clone(), source: Box::new(e) })?;
-            reconcile(&mut plan, Some(&ancestor));
-        } else {
-            // Same commit: the current render is the ancestor, so any
-            // difference on disk is a local edit to keep.
-            reconcile(&mut plan, None);
-        }
+                .map_err(|e| UpdateError::Previous { commit: old.clone(), source: Box::new(e) })?,
+        ),
+        (_, _, Some(old_inputs)) => Some(loaded.plan(None, old_inputs.clone(), &PlanOptions { allow_shell: opts.allow_shell, ..Default::default() })?),
+        _ => None,
+    };
+    if let Some(ancestor) = &ancestor {
+        reconcile(&mut plan, Some(ancestor));
+        let (removals, local_edits) = drift(dest, ancestor, &plan);
+        plan.removals = removals;
+        plan.local_edits = local_edits;
     }
     Ok(Prepared { plan, previous, loaded })
 }
 
+/// What changed on disk relative to the previous render: files it produced
+/// that the new render does not and that are unmodified (to remove), and
+/// files that differ from what it wrote (local edits).
+fn drift(dest: &Path, ancestor: &Plan, plan: &Plan) -> (Vec<plan::Removal>, Vec<PathBuf>) {
+    let now: std::collections::HashSet<&Path> = plan.ops.iter().map(|o| o.path.as_path()).collect();
+    let mut removals = Vec::new();
+    let mut edits = Vec::new();
+    for op in &ancestor.ops {
+        let OpKind::WriteFile { content, origin, .. } = &op.kind else { continue };
+        if matches!(origin, plan::Origin::Generated) {
+            continue;
+        }
+        let Ok(on_disk) = std::fs::read(dest.join(&op.path)) else { continue };
+        let untouched = on_disk == content.as_bytes();
+        if !untouched {
+            edits.push(op.path.clone());
+        }
+        if !now.contains(op.path.as_path()) && untouched {
+            removals.push(plan::Removal { path: op.path.clone(), expected: on_disk });
+        }
+    }
+    (removals, edits)
+}
+
+/// Inputs as recorded in the answers file, resolved against the template.
+pub fn recorded_inputs(dest: &Path, loaded: &Loaded) -> Result<Inputs, UpdateError> {
+    let answers = Answers::load(dest)?;
+    Ok(inputs::resolve(&loaded.combined_manifest(), &answers.overrides())?)
+}
+
 /// Render the previously used commit with the same inputs, from the mirror
 /// that `prepare` just synced.
-async fn render_previous(new: &GitInfo, commit: &str, inputs: &Inputs, opts: &Options) -> Result<Plan, UpdateError> {
+async fn render_previous(new: &GitInfo, commit: &str, with: &[String], inputs: &Inputs, opts: &Options) -> Result<Plan, UpdateError> {
     let src = source::Source::Git { url: new.url.clone(), reference: Some(commit.to_string()), subdir: new.subdir.clone() };
     let fetch = source::Options { offline: true, ..opts.fetch.clone() };
-    let loaded = compose::load_resolved(src.resolve(&fetch).await?, &fetch, 0).await?;
+    let mut loaded = compose::load_resolved(src.resolve(&fetch).await?, &fetch, 0).await?;
+    loaded.add_with(with, &fetch).await?;
     let plan_opts = PlanOptions { allow_shell: opts.allow_shell, ..Default::default() };
     Ok(loaded.plan(None, inputs.clone(), &plan_opts)?)
 }
@@ -137,7 +182,12 @@ fn reconcile(plan: &mut Plan, ancestor: Option<&Plan>) {
         let base: &str = match ancestor {
             Some(_) => match old.get(op.path.as_path()) {
                 Some(b) => b,
-                None => continue, // new in template
+                None => {
+                    // Not in the previous render, yet something is on disk
+                    // that differs: the user's file. Theirs, as always.
+                    op.status = Status::Kept { rule: "edited locally; not in the previous render".into() };
+                    continue;
+                }
             },
             None => theirs,
         };
@@ -246,6 +296,7 @@ mod tests {
 
         let prepared = prepare(dest.path(), &Options { fetch: fetch(cache.path()), ..Default::default() }).await.unwrap();
         assert_eq!(prepared.previous.as_deref(), Some(v1.as_str()));
+        assert_eq!(prepared.plan.local_edits, [PathBuf::from("mine.txt"), PathBuf::from("src/main.rs")]);
         assert_eq!(prepared.plan.template.git.as_ref().unwrap().commit, v2);
         let status = |p: &str| &prepared.plan.ops.iter().find(|o| o.path == Path::new(p)).unwrap().status;
         let text = |p: &str| match &prepared.plan.ops.iter().find(|o| o.path == Path::new(p)).unwrap().kind {
@@ -290,6 +341,42 @@ mod tests {
         let out = apply::apply(&prepared.plan, &apply::Options { existing: Existing::Overwrite, hooks: Hooks::Skip }, &mut |_| {}).await.unwrap();
         assert!(out.modified.iter().any(|p| p == Path::new("f.txt")));
         assert!(fs::read_to_string(dest.path().join("f.txt")).unwrap().contains(">>>>>>>"));
+    }
+
+    #[tokio::test]
+    async fn set_removes_untouched_dropped_files_and_keeps_edited_ones() {
+        let repo = Repo::new();
+        repo.commit(
+            &[
+                ("sc.toml", "[vars.name]\n[vars.ci]\ntype = \"bool\"\ndefault = true\n[tree]\n\".github/\" = { when = \"ci\" }\n"),
+                (".github/workflows/ci.yml", "on: push\n"),
+                (".github/CODEOWNERS", "* @me\n"),
+                ("f.txt", "{{ name }}\n"),
+            ],
+            "v1",
+        );
+        let cache = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        apply_first(&repo, dest.path(), cache.path()).await;
+        fs::write(dest.path().join(".github/CODEOWNERS"), "* @me @you\n").unwrap();
+
+        let opts = Options { vars: vec![("ci".into(), "false".into())], pin: true, fetch: fetch(cache.path()), ..Default::default() };
+        let prepared = prepare(dest.path(), &opts).await.unwrap();
+        assert_eq!(prepared.plan.removals.iter().map(|r| r.path.clone()).collect::<Vec<_>>(), [PathBuf::from(".github/workflows/ci.yml")]);
+        assert_eq!(prepared.plan.local_edits, [PathBuf::from(".github/CODEOWNERS")]);
+        let out = apply::apply(&prepared.plan, &apply::Options { existing: Existing::Fail, hooks: Hooks::Skip }, &mut |_| {}).await.unwrap();
+        assert_eq!(out.removed, [PathBuf::from(".github/workflows/ci.yml")]);
+        assert!(!dest.path().join(".github/workflows").exists(), "emptied directory is removed");
+        assert!(dest.path().join(".github/CODEOWNERS").exists(), "edited file stays");
+        assert!(Answers::load(dest.path()).unwrap().inputs["ci"] == toml::Value::Boolean(false));
+
+        // Flip it back: the workflow returns, the edit is untouched.
+        let opts = Options { vars: vec![("ci".into(), "true".into())], pin: true, fetch: fetch(cache.path()), ..Default::default() };
+        let prepared = prepare(dest.path(), &opts).await.unwrap();
+        assert!(prepared.plan.removals.is_empty());
+        apply::apply(&prepared.plan, &apply::Options { existing: Existing::Fail, hooks: Hooks::Skip }, &mut |_| {}).await.unwrap();
+        assert_eq!(fs::read_to_string(dest.path().join(".github/workflows/ci.yml")).unwrap(), "on: push\n");
+        assert_eq!(fs::read_to_string(dest.path().join(".github/CODEOWNERS")).unwrap(), "* @me @you\n");
     }
 
     #[tokio::test]

@@ -15,16 +15,16 @@ pub struct Args {
     #[command(flatten)]
     vars: Vars,
     /// Also print the rendered contents of each text file.
-    #[arg(long)]
+    #[arg(long, short = 'c')]
     contents: bool,
     /// Show a unified diff for files that would be modified.
-    #[arg(long)]
+    #[arg(long, short = 'd')]
     diff: bool,
     /// Also list dropped template entries and full hook scripts.
     #[arg(long)]
     verbose: bool,
     /// Emit the plan as JSON instead of text.
-    #[arg(long, conflicts_with_all = ["contents", "diff", "verbose"])]
+    #[arg(long, short = 'j', conflicts_with_all = ["contents", "diff", "verbose"])]
     json: bool,
     /// Permit the template to run commands while planning (before hooks,
     /// generate rules, shell()). They are listed in the output.

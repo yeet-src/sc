@@ -36,16 +36,30 @@ type = "bool"
 prompt = "Add a CI workflow?"
 default = true
 
-# How template entries are treated.
+# Per-path rules, keyed by output path. A trailing slash covers a directory.
+[tree]
+".github/" = {{ when = "ci" }}       # dropped when the condition is false
+# "README.md"  = {{ keep = true }}                  # created once, never overwritten
+# "Cargo.toml" = {{ merge = "toml" }}               # combine with an existing file: toml | json | yaml | append-lines
+# "src/lib.rs" = {{ merge = "insert", marker = "// sc:modules" }}
+# "assets/**"  = {{ raw = true }}                   # copied byte-for-byte, not rendered
+
+# Variants: `"LICENSE" = {{ variants = "license" }}` in [tree] emits one of
+# .sc/variants/LICENSE/<value> at LICENSE, chosen by the license input;
+# `sc checkout license=MIT` links LICENSE to that variant in this tree.
+#
+# How template entries are named and treated.
 # [files]
 # exclude = ["*.orig"]              # never emitted (template-path globs)
-# raw = ["assets/**"]               # copied byte-for-byte, not rendered
-# keep = ["README.md"]              # created once, never overwritten (output-path globs)
-# dot_prefix = "dot_"               # dot_gitignore -> .gitignore
+# dot_prefix = "_"                  # _gitignore -> .gitignore; off by default
 #
-# [files.merge]                     # combine with an existing file instead of replacing it
-# "Cargo.toml" = "toml"             # toml | json | yaml | append-lines
-# "src/lib.rs" = {{ strategy = "insert", marker = "// sc:modules" }}
+# Variants: `"LICENSE" = {{ variants = "license" }}` in [tree] emits one of
+# .sc/variants/LICENSE/<value> at LICENSE, chosen by the license input;
+# `sc checkout license=MIT` links LICENSE to that variant in this tree.
+#
+# [files.rename]                    # or name entries explicitly
+# "gitignore" = ".gitignore"
+# "github/" = ".github/"
 #
 # [[files.syntax]]                  # other delimiters for files that use {{{{ }}}} themselves
 # path = "charts/**"
@@ -77,8 +91,8 @@ default = true
     vec![
         (PathBuf::from(MANIFEST_FILE), manifest),
         (PathBuf::from("README.md"), readme.into()),
-        (PathBuf::from("dot_gitignore"), gitignore.into()),
-        (PathBuf::from("{% if ci %}.github{% endif %}/workflows/ci.yml"), ci.into()),
+        (PathBuf::from(".gitignore"), gitignore.into()),
+        (PathBuf::from(".github/workflows/ci.yml"), ci.into()),
         (PathBuf::from(CONTROL_DIR).join("partials/footer.md"), footer.into()),
         (PathBuf::from(CONTROL_DIR).join("tests/default/inputs.toml"), inputs.into()),
     ]

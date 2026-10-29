@@ -11,6 +11,13 @@ sc apply gh:yeet-src/templates --subdir rust-cli ./my-app -v name="My App"
 `sc` never writes before showing you a plan, and the plan tells you exactly
 what each file will do: create, modify, merge, keep, or conflict.
 
+**The one rule.** A project is `render(template @ version, inputs)` plus your
+edits on top. The inputs live in `.sc.toml`, and nothing else is state.
+Every command either looks (`plan`, `tree`, `diff`, `where`, `status`,
+`test`), changes the inputs (`set`), or changes the template version
+(`update`). Files you never touched follow the template, including going
+away when an input stops producing them; files you edited are yours.
+
 ## Install
 
 Download a static binary for macOS or Linux (x86_64 or arm64) from the
@@ -30,8 +37,16 @@ Git templates need `git` and `tar` on the path.
 | `sc plan <template> [dest]` | Show what would happen. Writes nothing. |
 | `sc apply <template> <dest>` | Show the plan, confirm, write. |
 | `sc update [dest]` | Re-apply the template a project came from, at its newest version. |
+| `sc set KEY=VALUE...` | Change a project's inputs and re-derive its tree, same template version. |
+| `sc status [dest]` | Show a project's template, inputs, and files edited since the last render. |
 | `sc test <template>` | Run a template's golden tests. |
 | `sc tree <template>` | Show a template's inputs and file tree without rendering it. |
+| `sc diff <template>` | Compare two renders under different inputs or golden cases. |
+| `sc dev <template> <scratch>` | Keep a scratch directory rendered while you edit the template. |
+| `sc where [path]` | Say where a directory inside a template ends up in the output. |
+| `sc enter [template]` | Open a shell inside a template with a prompt that says where you are. |
+| `sc checkout KEY=VALUE...` | Point a template's variant links at the variants these inputs select. |
+| `sc variant add GROUP VALUE` | Add a variant to a group's store. |
 | `sc new <dir>` | Create a starter template. |
 
 A template is a directory, `gh:owner/repo`, `gl:owner/repo`, or any git URL.
@@ -88,6 +103,20 @@ Writes are staged and then renamed into place, so a failure part-way leaves
 the destination as it was. If a file changed between plan and apply, `sc`
 notices and stops.
 
+### Changing inputs
+
+```
+sc set ci=false                 # the .github/ directory goes away, if you never edited it
+sc set --case with-ci           # switch to a golden case's complete input set
+sc status                       # template, version, inputs, and local edits
+```
+
+`set` stays on the template version the project was generated from and
+re-derives the tree from the new inputs. A file the new inputs no longer
+produce is removed if it still holds what the previous render wrote, and
+kept if you changed it. The plan shows removals as `x` and says how many
+files carry local edits.
+
 ### Updating
 
 Every apply writes `.sc.toml` into the destination recording the template,
@@ -119,8 +148,10 @@ my-template/
   .sc/                      partials, hook scripts, tests; never emitted
   README.md                 {{ name }} inside files is rendered
   src/{{ name | snake_case }}.rs      and inside paths
-  dot_gitignore             becomes .gitignore
-  {% if ci %}.github{% endif %}/...   dropped entirely when ci is false
+  .gitignore                a real dotfile; nothing special
+  .github/workflows/ci.yml  present only when [tree] says so, see below
+  LICENSE                   a link to the checked-out variant, see Variants
+  .sc/variants/LICENSE/     MIT, Apache-2.0
 ```
 
 Templates use [minijinja](https://github.com/mitsuhiko/minijinja), a Jinja2
@@ -130,6 +161,31 @@ the built-in set. An undefined variable is an error, never silent empty text.
 `{% include "partials/header.md" %}` resolves against `.sc/`.
 
 A directory with no manifest is a valid template. Every `-v` is then a string.
+
+**Or watch it live.** `sc dev my-template ./scratch -v name=Demo` renders
+into `./scratch` and re-renders whenever the template changes. The scratch
+tree's `.sc.toml` is the switchboard: set `ci = false` in it and the
+`.github/` directory disappears. Edits inside the scratch tree are
+overwritten, so treat it as a view.
+
+**Or work inside it.** `sc enter my-template` opens a shell at the
+template with `sc` completions loaded, `SC_TEMPLATE` set, and a line above
+the prompt saying what the current directory becomes:
+
+```
+rust-cli › .github/workflows/  when ci
+~/my-template/.github/workflows %
+```
+
+`exit` leaves it. For your own prompt, `sc where --prompt zsh` (or `bash`)
+prints that line, colored and escaped for the shell, and nothing outside a
+template.
+
+```
+~/tpl/.sc/variants/config/prod   [rust-cli config variant prod]
+~/tpl/.github/workflows     [rust-cli .github/workflows/ when ci]
+~/tpl/.sc/partials          [rust-cli never emitted control]
+```
 
 ### The manifest
 
@@ -158,21 +214,78 @@ default = [{ name = "api", port = 8080 }]
 
 Variable types: `string` (default), `bool`, `int`, `choice`, `list`.
 
-### File rules
+### The tree section
+
+Per-path rules live in one table keyed by output path. Globs are allowed,
+and a trailing slash covers a directory and everything under it.
+
+```toml
+[tree]
+".github/"     = { when = "ci" }                  # dropped when the condition is false
+"Dockerfile"   = { when = "deploy == 'container'" }
+"Makefile"     = { when = "not docker" }
+"README.md"    = { keep = true }                  # created if absent, never touched again
+"Cargo.toml"   = { merge = "toml" }               # deep merge, keeps your comments and layout
+"package.json" = { merge = "json" }
+"k8s/*.yaml"   = { merge = "yaml" }               # deep merge; comments are not preserved
+".gitignore"   = { merge = "append-lines" }       # adds lines the file lacks
+"src/lib.rs"   = { merge = "insert", marker = "// sc:modules" }
+"assets/**"    = { raw = true }                   # copied byte for byte, paths still rendered
+```
+
+`when` is a template expression over the inputs, so anything `{% if %}`
+accepts works. `sc tree my-template -v ci=false` shows which entries a set
+of inputs turns off, and `sc diff my-template -v ci=false -- -v ci=true`
+shows exactly what changes between two sets.
+
+### Variants
+
+A path can have several versions, one per value of an input. Declare the
+group in the manifest and keep the versions in the store:
+
+```toml
+[tree]
+"LICENSE" = { variants = "license" }      # one of .sc/variants/LICENSE/*
+"config/" = { variants = "env" }          # directories work the same way
+```
+
+```
+.sc/variants/LICENSE/MIT
+.sc/variants/LICENSE/Apache-2.0
+.sc/variants/config/dev/app.yaml
+.sc/variants/config/prod/app.yaml
+```
+
+The one whose name (minus an alphabetic extension) equals the input's value
+is emitted at the group's path. No match emits nothing, and `sc plan
+--verbose` says so, so declare the input as a `choice`.
+
+In the template's working tree the group's path is a symlink to the
+checked-out variant, so `ls` shows `LICENSE`, your editor opens it, and
+saving edits that variant:
+
+```
+sc checkout license=Apache-2.0       # LICENSE -> .sc/variants/LICENSE/Apache-2.0
+sc checkout --case with-ci           # every group, from a golden case's inputs
+sc checkout                          # what is checked out now
+sc variant add LICENSE GPL-3.0       # a new variant, copied from the checked-out one
+sc variant list
+```
+
+The planner always reads the store, never the links, so what is checked
+out never changes what a template produces.
+
+### Other file rules
 
 ```toml
 [files]
 exclude = ["*.orig"]              # never emitted; matched against template paths
-raw = ["assets/**"]               # copied byte for byte, paths still rendered
-keep = ["README.md"]              # created if absent, never touched again; output paths
-dot_prefix = "dot_"               # "" to disable the dotfile convention
+dot_prefix = "_"                  # off by default: _gitignore -> .gitignore, for
+                                  # registries that strip dotfiles on publish
 
-[files.merge]                     # combine with an existing file instead of replacing it
-"Cargo.toml" = "toml"             # deep merge, keeps your comments and layout
-"package.json" = "json"
-"k8s/*.yaml" = "yaml"             # deep merge; comments are not preserved
-".gitignore" = "append-lines"     # adds lines the file lacks
-"src/lib.rs" = { strategy = "insert", marker = "// sc:modules" }
+[files.rename]                    # explicit names, instead of or alongside _
+"gitignore" = ".gitignore"
+"github/" = ".github/"
 
 [[files.syntax]]                  # for files that use {{ }} themselves
 path = "charts/**"
@@ -180,6 +293,9 @@ variable = ["[[", "]]"]
 block = ["[%", "%]"]
 comment = ["[#", "#]"]
 ```
+
+The older forms `[files] keep`, `[files] raw` and `[files.merge]` still
+work and mean the same as the `[tree]` fields.
 
 Binary files are detected and copied as-is.
 
@@ -224,6 +340,23 @@ lists the commands; the plan shows what ran under "Ran while planning".
 
 ### Composing templates
 
+Templates stack. A layer underneath contributes its inputs, files and hooks;
+the layer on top overrides files path by path, except where a merge rule on
+either side says to combine them instead. So a CI template with
+`".gitignore" = "append-lines"` adds its lines to the project's `.gitignore`
+rather than replacing it.
+
+From the command line, for any combination:
+
+```
+sc apply ./project ./my-app --with gh:org/ci-template#v2 -v name="My App"
+```
+
+`--with` is repeatable, asks for the union of all inputs, and is recorded in
+the answers file so `sc update` applies the same layers again.
+
+In a manifest, for a fixed combination:
+
 ```toml
 [[uses]]                          # layer this template over another
 source = "gh:org/base#v3"         # files here override the base's, path by path
@@ -237,7 +370,7 @@ inputs = { name = "{{ item.name }}", port = "{{ item.port }}" }
 
 A mounted template has its own manifest and rules. Its hooks run in its
 mount directory with its own inputs. Where the outer template and a mount
-produce the same path, the outer one wins.
+produce the same path, the outer one wins unless a merge rule combines them.
 
 ### Golden tests
 

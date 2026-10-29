@@ -40,6 +40,9 @@ pub fn print_outcome(o: &apply::Outcome) {
     for p in &o.kept {
         println!("{} {}", "kept    ".magenta().bold(), p.display().to_string().blue());
     }
+    for p in &o.removed {
+        println!("{} {}", "removed ".red().bold(), p.display().to_string().blue());
+    }
     for h in &o.hooks {
         println!("{} {}", "hook    ".cyan().bold(), h.green());
     }
@@ -49,6 +52,7 @@ pub fn print_outcome(o: &apply::Outcome) {
         (o.unchanged.len(), "unchanged", "blue"),
         (o.skipped.len(), "skipped", "red"),
         (o.kept.len(), "kept", "magenta"),
+        (o.removed.len(), "removed", "red"),
         (o.hooks.len(), "hook(s) run", "cyan"),
     ]
     .into_iter()
@@ -138,9 +142,17 @@ pub fn print_plan(plan: &Plan, show: &Show) {
                 DropReason::Control => "control file".to_string(),
                 DropReason::Excluded { rule } => format!("excluded by `{rule}`"),
                 DropReason::EmptyPath => "path rendered empty".to_string(),
+                DropReason::When { rule } => format!("when `{rule}` is false"),
+                DropReason::NoVariant { var, value, available } => {
+                    format!("no variant for {var} = {value:?}; have {}", available.join(", "))
+                }
             };
             println!("  {} {}  {}", "-".red(), d.template_path.display().to_string().blue(), why.yellow());
         }
+    }
+
+    for r in &plan.removals {
+        println!("{} {}  {}", "x".red().bold(), r.path.display().to_string().blue(), "no longer produced; unchanged locally, will be removed".red());
     }
 
     if !plan.mounts.is_empty() {
@@ -225,6 +237,9 @@ fn print_header(plan: &Plan) {
         (Some(n), None) => println!("{} {}", label("Template"), n.green().bold()),
         _ => {}
     }
+    if !t.with.is_empty() {
+        println!("{} {}", label("With"), t.with.join(", ").green());
+    }
     match &t.git {
         Some(g) => {
             let at = match &g.reference {
@@ -239,6 +254,16 @@ fn print_header(plan: &Plan) {
     match &t.dest {
         Some(d) => println!("{} {}", label("Dest"), d.display().to_string().blue()),
         None => println!("{} {}", label("Dest"), "(none; all operations shown as creates)".yellow()),
+    }
+
+    if !plan.local_edits.is_empty() {
+        let n = plan.local_edits.len();
+        println!(
+            "{} {}  {}",
+            label("Edits"),
+            format!("{n} file{} modified locally since the last render", if n == 1 { "" } else { "s" }).yellow().bold(),
+            "(kept; merged where the template also changed)".yellow()
+        );
     }
 
     if !plan.inputs.0.is_empty() {
@@ -267,6 +292,7 @@ fn print_header(plan: &Plan) {
 fn print_summary(plan: &Plan) {
     let (mut create, mut modify, mut merge, mut unchanged, mut conflict, mut kept, mut update, mut clash, mut bytes) =
         (0, 0, 0, 0, 0, 0, 0, 0, 0usize);
+    let removals = plan.removals.len();
     for op in &plan.ops {
         let size = match &op.kind {
             OpKind::WriteFile { content, .. } => content.as_bytes().len(),
@@ -313,6 +339,9 @@ fn print_summary(plan: &Plan) {
     if kept > 0 {
         parts.push(format!("{kept} kept").magenta().bold());
     }
+    if removals > 0 {
+        parts.push(format!("{removals} to remove").red().bold());
+    }
     if unchanged > 0 {
         parts.push(format!("{unchanged} unchanged").blue().bold());
     }
@@ -341,18 +370,44 @@ fn print_summary(plan: &Plan) {
 }
 
 pub fn print_diff(path: &Path, existing: &[u8], new: &str) {
+    use similar::{ChangeTag, TextDiff};
+
     let old = String::from_utf8_lossy(existing);
-    let diff = similar::TextDiff::from_lines(old.as_ref(), new);
-    let name = path.display().to_string();
-    for hunk in diff.unified_diff().context_radius(3).header(&name, &name).iter_hunks() {
-        for line in hunk.to_string().lines() {
-            let colored = match line.chars().next() {
-                Some('+') => line.green(),
-                Some('-') => line.red(),
-                Some('@') => line.cyan().bold(),
-                _ => line.white(),
-            };
-            println!("    {colored}");
+    let diff = TextDiff::from_lines(old.as_ref(), new);
+    let _ = path; // the op line above already names the file
+    for group in diff.grouped_ops(3) {
+        let (Some(first), Some(last)) = (group.first(), group.last()) else { continue };
+        let (os, oe) = (first.old_range().start, last.old_range().end);
+        let (ns, ne) = (first.new_range().start, last.new_range().end);
+        println!(
+            "    {}",
+            format!("@@ -{},{} +{},{} @@", os + 1, oe - os, ns + 1, ne - ns).cyan().bold()
+        );
+        for op in &group {
+            for change in diff.iter_inline_changes(op) {
+                let num = |i: Option<usize>| i.map(|i| (i + 1).to_string()).unwrap_or_default();
+                let gutter = format!("{:>4} {:>4}", num(change.old_index()), num(change.new_index())).magenta();
+                let sign = match change.tag() {
+                    ChangeTag::Delete => "-".red().bold(),
+                    ChangeTag::Insert => "+".green().bold(),
+                    ChangeTag::Equal => " ".normal(),
+                };
+                // Words that differ within a changed line stand out on a
+                // filled background; the rest of the line keeps the line color.
+                let mut text = String::new();
+                for (emphasized, value) in change.iter_strings_lossy() {
+                    let v = value.trim_end_matches('\n');
+                    let piece = match (change.tag(), emphasized) {
+                        (ChangeTag::Delete, true) => v.white().on_red().bold(),
+                        (ChangeTag::Delete, false) => v.red(),
+                        (ChangeTag::Insert, true) => v.black().on_green().bold(),
+                        (ChangeTag::Insert, false) => v.green(),
+                        (ChangeTag::Equal, _) => v.normal(),
+                    };
+                    text.push_str(&piece.to_string());
+                }
+                println!("    {gutter} {sign} {text}");
+            }
         }
     }
 }

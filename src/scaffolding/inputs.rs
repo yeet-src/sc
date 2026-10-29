@@ -155,6 +155,15 @@ fn check_pattern(name: &str, spec: &VarSpec, raw: &str) -> Result<(), InputError
     Ok(())
 }
 
+/// Like [`resolve`], but a declared variable with neither an override nor a
+/// default is left out instead of being an error. For `sc tree -v`, where
+/// a partial set of inputs is enough to evaluate conditions.
+pub fn resolve_lenient(manifest: &Manifest, overrides: &[(String, String)]) -> Result<Inputs, InputError> {
+    let mut trimmed = manifest.clone();
+    trimmed.vars.retain(|name, spec| spec.default.is_some() || overrides.iter().any(|(k, _)| k == name));
+    resolve(&trimmed, overrides)
+}
+
 /// The text form of a value, suitable as an override: strings as-is,
 /// everything else as JSON so lists and tables round-trip.
 pub fn override_text<T: serde::Serialize>(v: &T) -> String {

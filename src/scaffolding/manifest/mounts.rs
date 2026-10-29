@@ -24,4 +24,6 @@ pub struct Mount {
     /// string and then typed by the sub-template's manifest.
     #[serde(default)]
     pub inputs: IndexMap<String, String>,
+    /// Template expression; the mount is skipped when it is false.
+    pub when: Option<String>,
 }

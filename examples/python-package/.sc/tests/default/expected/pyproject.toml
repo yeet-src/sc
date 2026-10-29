@@ -1,0 +1,10 @@
+[project]
+name = "yeet-tools"
+version = "0.1.0"
+description = "A small package"
+requires-python = ">=3.12"
+license = "MIT"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

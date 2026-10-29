@@ -11,10 +11,12 @@
 //! - [`update`] re-applies a newer template version with a three-way merge,
 //!   using the [`answers`] file written by every apply.
 //! - [`golden`] runs a template's own expected-output tests; [`skeleton`]
-//!   writes a starter template; [`describe`] explains one without rendering.
+//!   writes a starter template; [`describe`] explains one without rendering;
+//!   [`compare`] diffs two renders of one template.
 
 pub mod answers;
 pub mod apply;
+pub mod compare;
 pub mod compose;
 pub mod describe;
 pub mod golden;

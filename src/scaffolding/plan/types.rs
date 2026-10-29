@@ -25,6 +25,9 @@ pub struct PlanOptions {
     /// Template-relative directories to skip as control material, such as
     /// sub-templates referenced by `[[mounts]]`.
     pub extra_control: Vec<PathBuf>,
+    /// Extra templates layered under this one from the command line,
+    /// recorded in the answers file so `update` applies them again.
+    pub with: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -45,6 +48,21 @@ pub struct Plan {
     pub executed: Vec<Executed>,
     /// Sub-templates mounted into this plan.
     pub mounts: Vec<MountInfo>,
+    /// Files the previous render produced that this one does not, and that
+    /// were never edited locally; apply deletes them. Set by `update`/`set`.
+    #[serde(default)]
+    pub removals: Vec<Removal>,
+    /// Files edited locally since the previous render, for the plan header.
+    #[serde(default)]
+    pub local_edits: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Removal {
+    pub path: PathBuf,
+    /// The bytes the file is expected to still have; apply re-checks.
+    #[serde(skip)]
+    pub expected: Vec<u8>,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,6 +109,8 @@ pub struct TemplateInfo {
     /// The directory planned from (a checkout, for git templates).
     pub source: PathBuf,
     pub git: Option<crate::scaffolding::source::GitInfo>,
+    /// Extra templates layered underneath, from `--with`.
+    pub with: Vec<String>,
     pub dest: Option<PathBuf>,
 }
 
@@ -210,6 +230,10 @@ pub enum DropReason {
     Excluded { rule: String },
     /// A path component rendered to the empty string.
     EmptyPath,
+    /// A `[tree]` `when` condition was false.
+    When { rule: String },
+    /// A variant group had no child for the input's value.
+    NoVariant { var: String, value: String, available: Vec<String> },
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -234,6 +258,10 @@ pub enum PlanError {
     BadPath { template_path: String, rendered: String, reason: &'static str },
     #[error("template emits `{ANSWERS_FILE}`, which is reserved for the answers file")]
     ReservedPath,
+    #[error("{group}: variant group selects on `{var}`, which is not an input")]
+    UnknownVariantInput { group: String, var: String },
+    #[error("{group}: variant group has no candidates; expected a directory at {store}")]
+    NoVariantStore { group: String, store: String },
     #[error("serializing answers file: {0}")]
     Answers(#[from] toml::ser::Error),
     #[error("merging {path} ({}): {source}", strategy.name())]

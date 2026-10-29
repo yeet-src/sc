@@ -86,7 +86,7 @@ impl Source {
                 if !path.is_dir() {
                     return Err(SourceError::Missing(path.clone()));
                 }
-                Ok(Resolved { root: path.clone(), git: None, _checkout: None })
+                Ok(Resolved { root: template_dir(path), git: None, _checkout: None })
             }
             Source::Git { url, reference, subdir } => {
                 let mirror = cache_dir(opts)?.join(cache_name(url));
@@ -96,7 +96,7 @@ impl Source {
                 archive(&mirror, &commit, checkout.path()).await?;
                 let root = match subdir {
                     Some(s) => checkout.path().join(s),
-                    None => checkout.path().to_path_buf(),
+                    None => template_dir(checkout.path()),
                 };
                 if !root.is_dir() {
                     return Err(SourceError::NoSubdir {
@@ -109,6 +109,18 @@ impl Source {
                 Ok(Resolved { root, git: Some(git), _checkout: Some(checkout) })
             }
         }
+    }
+}
+
+/// A repository may keep its template under `template/` so the repo's own
+/// `.github/` and `.gitignore` stay separate from the template's. Use it
+/// when the root has no manifest and the subdirectory has one.
+fn template_dir(root: &Path) -> PathBuf {
+    let sub = root.join("template");
+    if !root.join(crate::scaffolding::manifest::MANIFEST_FILE).is_file() && sub.join(crate::scaffolding::manifest::MANIFEST_FILE).is_file() {
+        sub
+    } else {
+        root.to_path_buf()
     }
 }
 

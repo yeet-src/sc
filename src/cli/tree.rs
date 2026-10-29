@@ -1,24 +1,52 @@
 use colored::Colorize;
 
-use super::{Result, Template};
+use super::{Result, Template, Vars};
 use crate::scaffolding::describe::{self, EntryKind, Tag};
+use crate::scaffolding::inputs;
 use crate::scaffolding::manifest::{Phase, VarKind};
 
 #[derive(clap::Args)]
 pub struct Args {
     #[command(flatten)]
     template: Template,
+    /// Inputs to evaluate `[tree]` conditions with; missing required inputs
+    /// are allowed here and left undefined.
+    #[command(flatten)]
+    vars: Vars,
     /// Emit the description as JSON instead of text.
-    #[arg(long)]
+    #[arg(long, short = 'j')]
     json: bool,
     /// Also show control entries: the manifest, .sc/, mounted sub-templates.
     #[arg(long, short = 'a')]
     all: bool,
 }
 
+/// `one of MIT, Apache-2.0 by license; checked out MIT` with the chosen one
+/// marked when inputs were given.
+pub fn variants_note(var: &str, choices: &[String], checked_out: Option<&str>, chosen: Option<&str>) -> String {
+    let list = choices
+        .iter()
+        .map(|c| match (chosen, checked_out) {
+            (Some(ch), _) if ch == c => format!("{c}*").green().bold().to_string(),
+            _ => c.yellow().to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let out = match checked_out {
+        Some(c) => format!("; checked out {c}").magenta().to_string(),
+        None => "; nothing checked out".red().to_string(),
+    };
+    format!("{} {list} {}{out}", "one of".cyan(), format!("by {var}").cyan())
+}
+
 pub async fn run(a: Args) -> Result {
     let loaded = a.template.load().await?;
-    let d = describe::describe(&loaded)?;
+    let inputs = if a.vars.vars.is_empty() {
+        None
+    } else {
+        Some(inputs::resolve_lenient(&loaded.combined_manifest(), &a.vars.vars)?)
+    };
+    let d = describe::describe(&loaded, inputs.as_ref())?;
     if a.json {
         serde_json::to_writer_pretty(std::io::stdout().lock(), &d)?;
         println!();
@@ -148,6 +176,10 @@ pub async fn run(a: Args) -> Result {
                 Tag::Conditional => "conditional".yellow().to_string(),
                 Tag::Templated => "rendered name".yellow().to_string(),
                 Tag::Renamed { to } => format!("-> {to}").cyan().to_string(),
+                Tag::When { rule, holds: None } => format!("when {rule}").yellow().to_string(),
+                Tag::When { rule, holds: Some(true) } => format!("when {rule}: on").green().to_string(),
+                Tag::When { rule, holds: Some(false) } => format!("when {rule}: off").red().to_string(),
+                Tag::Variants { var, choices, checked_out, chosen } => variants_note(var, choices, checked_out.as_deref(), chosen.as_deref()),
             })
             .collect();
         let tags = if tags.is_empty() { String::new() } else { format!("  {}", tags.join(", ")) };

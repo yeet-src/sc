@@ -132,9 +132,11 @@ fn merge_toml(existing: &str, rendered: &str) -> Result<String, MergeError> {
                 _ => {
                     let mut item = item.clone();
                     // Keep the document readable: a sub-table from the overlay
-                    // stays a proper `[table]`, not an inline one.
+                    // stays a proper `[table]`, not an inline one, and gets a
+                    // blank line before its header like hand-written TOML.
                     if let Item::Table(t) = &mut item {
                         t.set_implicit(false);
+                        t.decor_mut().set_prefix("\n");
                     }
                     base[key] = item;
                 }

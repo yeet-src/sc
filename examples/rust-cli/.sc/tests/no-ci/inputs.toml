@@ -1,3 +1,4 @@
 name = "bare"
 ci = false
 edition = "2021"
+license = "none"

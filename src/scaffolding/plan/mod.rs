@@ -38,6 +38,15 @@ use walk::{Planner, looks_binary};
 pub use hooks::program;
 pub use walk::file_mode;
 
+/// Recompute an op's status against the destination under `manifest`'s keep
+/// and merge rules. Used after composition changes an op's content.
+pub fn restatus(dest: &Path, op: &mut Op, manifest: &Manifest) -> Result<(), PlanError> {
+    let keep = Rules::new(&manifest.files.keep)?;
+    let merge = MergeRules::new(&manifest.files.merge)?;
+    op.status = status::status(dest, op, &keep, &merge)?;
+    Ok(())
+}
+
 /// Written into the destination so a later run can see which template and
 /// inputs produced it.
 pub const ANSWERS_FILE: &str = ".sc.toml";
@@ -93,19 +102,27 @@ pub fn plan(
         ctx: shell::Context::new(template_root, &inputs, template_root, dest),
         log: Mutex::new(Vec::new()),
     });
+    let variant_groups = manifest.variant_groups();
+    let variant_outputs: Vec<PathBuf> = variant_groups.iter().map(|(k, _)| PathBuf::from(k)).collect();
     let mut planner = Planner {
         root: template_root,
         extra_control: &opts.extra_control,
         renderers: Renderers::new(template_root, manifest, &shell_state)?,
         dot_prefix: &manifest.files.dot_prefix,
+        rename: &manifest.files.rename,
+        variant_outputs: &variant_outputs,
         ctx: inputs.context(),
         exclude: Rules::new(&manifest.files.exclude)?,
         raw: Rules::new(&manifest.files.raw)?,
+        raw_out: Rules::new(&manifest.files.raw_out)?,
         ops: Vec::new(),
         dropped: Vec::new(),
         warnings: Vec::new(),
     };
     planner.walk(Path::new(""), Path::new(""))?;
+    for (key, var) in &variant_groups {
+        planner.variant(key, var)?;
+    }
 
     for g in &manifest.files.generate {
         let path = planner.renderers.default.render("generate.path", &g.path, &planner.ctx)?;
@@ -143,6 +160,25 @@ pub fn plan(
     );
 
     let mut ops = planner.ops;
+
+    // `[tree]` conditions: evaluate each once, then drop every op whose
+    // output path a false one covers.
+    let mut off: Vec<(Rules, String)> = Vec::new();
+    for (globs, expr) in manifest.conditions() {
+        if !condition_holds(&planner.renderers.default, &expr, &planner.ctx)? {
+            off.push((Rules::new(&globs)?, expr));
+        }
+    }
+    if !off.is_empty() {
+        let (kept, dropped): (Vec<Op>, Vec<Op>) =
+            ops.into_iter().partition(|o| !off.iter().any(|(r, _)| r.matched(&o.path).is_some()));
+        ops = kept;
+        for o in dropped {
+            let rule = off.iter().find(|(r, _)| r.matched(&o.path).is_some()).map(|(_, e)| e.clone()).unwrap_or_default();
+            planner.dropped.push(Dropped { template_path: o.template_path, reason: DropReason::When { rule } });
+        }
+    }
+
     if ops.iter().any(|o| o.path == Path::new(ANSWERS_FILE)) {
         return Err(PlanError::ReservedPath);
     }
@@ -151,7 +187,7 @@ pub fn plan(
         path: PathBuf::from(ANSWERS_FILE),
         mount: None,
         kind: OpKind::WriteFile {
-            content: Content::Text(answers_file(template_root, manifest, &inputs, opts.git.as_ref())?),
+            content: Content::Text(answers_file(template_root, manifest, &inputs, opts.git.as_ref(), &opts.with)?),
             mode: 0o644,
             origin: Origin::Generated,
         },
@@ -176,6 +212,7 @@ pub fn plan(
             description: manifest.template.description.clone(),
             source: template_root.to_path_buf(),
             git: opts.git.clone(),
+            with: opts.with.clone(),
             dest: dest.map(Path::to_path_buf),
         },
         inputs,
@@ -185,7 +222,15 @@ pub fn plan(
         hooks,
         executed,
         mounts: Vec::new(),
+        removals: Vec::new(),
+        local_edits: Vec::new(),
     })
+}
+
+/// Evaluate a `when` expression against the inputs: Jinja truthiness.
+pub fn condition_holds(renderer: &Renderer, expr: &str, ctx: &Value) -> Result<bool, PlanError> {
+    let out = renderer.render(&format!("when `{expr}`"), &format!("{{% if {expr} %}}1{{% endif %}}"), ctx)?;
+    Ok(!out.is_empty())
 }
 
 /// The answers file records provenance and every input, in manifest order,
@@ -196,6 +241,7 @@ fn answers_file(
     manifest: &Manifest,
     inputs: &Inputs,
     git: Option<&crate::scaffolding::source::GitInfo>,
+    with: &[String],
 ) -> Result<String, toml::ser::Error> {
     let template = match git {
         Some(g) => crate::scaffolding::answers::Template {
@@ -204,6 +250,7 @@ fn answers_file(
             reference: g.reference.clone(),
             commit: Some(g.commit.clone()),
             subdir: g.subdir.clone(),
+            with: with.to_vec(),
         },
         None => crate::scaffolding::answers::Template {
             name: manifest.template.name.clone(),
@@ -213,6 +260,7 @@ fn answers_file(
             reference: None,
             commit: None,
             subdir: None,
+            with: with.to_vec(),
         },
     };
     crate::scaffolding::answers::Answers {
@@ -313,17 +361,17 @@ mod tests {
     #[test]
     fn dot_prefix_includes_and_custom_syntax() {
         let dir = fixture(&[
-            ("sc.toml", b"[[files.syntax]]\npath = \"charts/**\"\nvariable = [\"[[\", \"]]\"]\n"),
+            ("sc.toml", b"[files]\ndot_prefix = \"_\"\n[[files.syntax]]\npath = \"charts/**\"\nvariable = [\"[[\", \"]]\"]\n"),
             (".sc/partials/hdr", b"# {{ n }}\n"),
-            ("dot_github/dot_keep", b""),
-            ("dot_", b"not renamed: nothing after the prefix"),
+            ("_github/_keep", b""),
+            ("_", b"not renamed: nothing after the prefix"),
             ("README.md", b"{% include 'partials/hdr' %}body\n"),
             ("charts/v.yaml", b"x: {{ .Values.x }} [[ n ]]\n"),
         ]);
         let plan = run(dir.path(), None, &[("n", "N")]).unwrap();
         assert_eq!(
             paths(&plan),
-            [".github", ".github/.keep", ".sc.toml", "README.md", "charts", "charts/v.yaml", "dot_"]
+            [".github", ".github/.keep", ".sc.toml", "README.md", "_", "charts", "charts/v.yaml"]
         );
         let text = |p: &str| match &plan.ops.iter().find(|o| o.path == Path::new(p)).unwrap().kind {
             OpKind::WriteFile { content: Content::Text(t), .. } => t.clone(),
@@ -365,6 +413,90 @@ mod tests {
         let plan = run_shell(dir.path(), Some(dest.path()), &[("n", "x"), ("ci", "no")]).unwrap();
         let generated = plan.ops.iter().find(|o| o.path == Path::new("gen/x.txt")).unwrap();
         assert_eq!(generated.status, Status::Kept { rule: "generate once".into() });
+    }
+
+    #[test]
+    fn variant_groups_pick_by_input_value() {
+        let dir = fixture(&[
+            ("sc.toml", b"[vars.public]\ntype = \"bool\"\ndefault = true\n[vars.env]\ntype = \"choice\"\nchoices = [\"dev\", \"prod\", \"test\"]\ndefault = \"dev\"\n[vars.runtime]\ndefault = \"node\"\n[tree]\n\"README.md\" = { variants = \"public\" }\n\"Dockerfile\" = { variants = \"runtime\" }\n\"config/\" = { variants = \"env\" }\n\"config/secrets.yaml\" = { variants = \"public\" }\n"),
+            (".sc/variants/README.md/true.md", b"# public {{ env }}\n"),
+            (".sc/variants/Dockerfile/node.Dockerfile", b"FROM node\n"),
+            (".sc/variants/Dockerfile/python.Dockerfile", b"FROM python\n"),
+            (".sc/variants/config/dev/app.yaml", b"debug: true\n"),
+            (".sc/variants/config/prod/app.yaml", b"debug: false\n"),
+            (".sc/variants/config/secrets.yaml/false.yaml", b"hidden\n"),
+            ("plain.txt", b"p"),
+        ]);
+        // The working tree holds a checked-out symlink, which the planner ignores.
+        std::os::unix::fs::symlink(".sc/variants/README.md/true.md", dir.path().join("README.md")).unwrap();
+
+        let plan = run(dir.path(), None, &[]).unwrap();
+        assert_eq!(paths(&plan), [".sc.toml", "Dockerfile", "README.md", "config", "config/app.yaml", "plain.txt"]);
+        let text = |plan: &Plan, p: &str| match &plan.ops.iter().find(|o| o.path == Path::new(p)).unwrap().kind {
+            OpKind::WriteFile { content: Content::Text(t), .. } => t.clone(),
+            _ => panic!("{p}"),
+        };
+        assert_eq!(text(&plan, "README.md"), "# public dev\n");
+        assert_eq!(text(&plan, "Dockerfile"), "FROM node\n");
+        assert_eq!(plan.ops.iter().find(|o| o.path == Path::new("Dockerfile")).unwrap().template_path, Path::new(".sc/variants/Dockerfile/node.Dockerfile"));
+        assert!(!plan.ops.iter().any(|o| matches!(o.kind, OpKind::Symlink { .. })), "the checkout link is not emitted");
+        assert!(plan.dropped.iter().any(|d| matches!(&d.reason, DropReason::NoVariant { var, value, available } if var == "public" && value == "true" && available == &["false"])));
+
+        let plan = run(dir.path(), None, &[("public", "false"), ("env", "prod"), ("runtime", "ruby")]).unwrap();
+        assert_eq!(paths(&plan), [".sc.toml", "config", "config/app.yaml", "config/secrets.yaml", "plain.txt"]);
+        assert_eq!(text(&plan, "config/app.yaml"), "debug: false\n");
+        assert_eq!(text(&plan, "config/secrets.yaml"), "hidden\n");
+        assert!(plan.dropped.iter().any(|d| matches!(&d.reason, DropReason::NoVariant { var, available, .. } if var == "runtime" && available == &["node", "python"])));
+
+        let bad = fixture(&[("sc.toml", b"[tree]\n\"x\" = { variants = \"nope\" }\n"), (".sc/variants/x/a", b"")]);
+        let err = run(bad.path(), None, &[]).unwrap_err();
+        assert!(matches!(err, PlanError::UnknownVariantInput { .. }), "{err}");
+        let missing = fixture(&[("sc.toml", b"[vars.v]\ndefault = \"a\"\n[tree]\n\"x\" = { variants = \"v\" }\n")]);
+        assert!(matches!(run(missing.path(), None, &[]).unwrap_err(), PlanError::NoVariantStore { .. }));
+    }
+
+    #[test]
+    fn tree_conditions_and_rules() {
+        let dir = fixture(&[
+            ("sc.toml", b"[vars.ci]\ntype = \"bool\"\ndefault = true\n[vars.deploy]\ndefault = \"none\"\n[tree]\n\".github/\" = { when = \"ci\" }\n\"Dockerfile\" = { when = \"deploy == 'container'\" }\n\"Makefile\" = { when = \"deploy != 'container'\" }\n\"README.md\" = { keep = true }\n\"Cargo.toml\" = { merge = \"toml\" }\n\"assets/**\" = { raw = true }\n"),
+            (".github/workflows/ci.yml", b"on: push\n"),
+            ("Dockerfile", b"FROM x\n"),
+            ("Makefile", b"all:\n"),
+            ("README.md", b"r"),
+            ("Cargo.toml", b"[package]\n"),
+            ("assets/logo.svg", b"<svg>{{ not rendered }}</svg>"),
+        ]);
+        let plan = run(dir.path(), None, &[]).unwrap();
+        assert_eq!(paths(&plan), [".github", ".github/workflows", ".github/workflows/ci.yml", ".sc.toml", "Cargo.toml", "Makefile", "README.md", "assets", "assets/logo.svg"]);
+        assert!(plan.dropped.iter().any(|d| d.template_path == Path::new("Dockerfile") && matches!(&d.reason, DropReason::When { rule } if rule == "deploy == 'container'")));
+        assert!(matches!(&plan.ops.iter().find(|o| o.path == Path::new("assets/logo.svg")).unwrap().kind, OpKind::WriteFile { origin: Origin::Raw { .. }, .. }));
+
+        let plan = run(dir.path(), None, &[("ci", "false"), ("deploy", "container")]).unwrap();
+        assert_eq!(paths(&plan), [".sc.toml", "Cargo.toml", "Dockerfile", "README.md", "assets", "assets/logo.svg"]);
+
+        let m = Manifest::load(dir.path()).unwrap();
+        assert!(m.files.keep.contains(&"README.md".to_string()));
+        assert!(m.files.merge.contains_key("Cargo.toml"));
+        let bad = fixture(&[("sc.toml", b"[tree]\n\"x\" = { marker = \"m\" }\n")]);
+        assert!(Manifest::load(bad.path()).is_err());
+    }
+
+    #[test]
+    fn rename_map_overrides_names() {
+        let dir = fixture(&[
+            ("sc.toml", b"[files]\ndot_prefix = \"_\"\n[files.rename]\n\"gitignore\" = \".gitignore\"\n\"github/\" = \".github/\"\n\"_keep\" = \"plain\"\n"),
+            ("gitignore", b"target/\n"),
+            ("github/workflows/ci.yml", b"on: push\n"),
+            ("_keep", b""),
+            ("_other", b""),
+        ]);
+        let plan = run(dir.path(), None, &[]).unwrap();
+        assert_eq!(
+            paths(&plan),
+            [".github", ".github/workflows", ".github/workflows/ci.yml", ".gitignore", ".other", ".sc.toml", "plain"]
+        );
+        let bad = fixture(&[("sc.toml", b"[files.rename]\n\"x\" = \"../y\"\n")]);
+        assert!(Manifest::load(bad.path()).is_err());
     }
 
     #[test]

@@ -11,7 +11,7 @@ pub struct Args {
     /// Run only this case.
     case: Option<String>,
     /// Rewrite each case's expected/ tree from the current output.
-    #[arg(long)]
+    #[arg(long, short = 'u')]
     update: bool,
 }
 

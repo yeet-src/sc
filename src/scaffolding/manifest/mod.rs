@@ -10,11 +10,13 @@
 mod files;
 mod hooks;
 mod mounts;
+mod tree;
 mod vars;
 
 pub use files::*;
 pub use hooks::*;
 pub use mounts::*;
+pub use tree::*;
 pub use vars::*;
 
 use std::path::Path;
@@ -45,6 +47,9 @@ pub struct Manifest {
     pub uses: Vec<Uses>,
     #[serde(default)]
     pub mounts: Vec<Mount>,
+    /// Per-path rules keyed by output path; see [`TreeEntry`].
+    #[serde(default)]
+    pub tree: IndexMap<String, TreeEntry>,
 }
 
 #[derive(Debug, Default, Clone, Deserialize)]
@@ -84,6 +89,10 @@ pub enum ManifestError {
     InvalidHook { index: usize, reason: String },
     #[error("mount `{path}`: {reason}")]
     InvalidMount { path: String, reason: String },
+    #[error("rename `{from}`: {reason}")]
+    InvalidRename { from: String, reason: String },
+    #[error("tree entry `{path}`: {reason}")]
+    InvalidTree { path: String, reason: String },
 }
 
 impl Manifest {
@@ -113,10 +122,48 @@ impl Manifest {
                 return Err(ManifestError::Io { path: path.display().to_string(), source });
             }
         };
-        let manifest: Manifest = toml::from_str(&text)
+        let mut manifest: Manifest = toml::from_str(&text)
             .map_err(|source| ManifestError::Parse { path: path.display().to_string(), source })?;
+        manifest.normalize();
         manifest.validate()?;
         Ok(manifest)
+    }
+
+    /// Fold `[tree]` keep, merge and raw rules into the `[files]` rule sets,
+    /// so the planner has one place to look. `when` stays on the entry.
+    fn normalize(&mut self) {
+        for (key, entry) in &self.tree {
+            for glob in glob_for(key) {
+                if entry.keep && !self.files.keep.contains(&glob) {
+                    self.files.keep.push(glob.clone());
+                }
+                if let Some(strategy) = entry.merge {
+                    self.files.merge.entry(glob.clone()).or_insert(MergeRule::Detailed {
+                        strategy,
+                        marker: entry.marker.clone(),
+                    });
+                }
+                if entry.raw && !self.files.raw_out.contains(&glob) {
+                    self.files.raw_out.push(glob);
+                }
+            }
+        }
+    }
+
+    /// `[tree]` variant groups as (output path, selecting input) pairs.
+    pub fn variant_groups(&self) -> Vec<(String, String)> {
+        self.tree
+            .iter()
+            .filter_map(|(k, e)| e.variants.as_ref().map(|v| (k.trim_end_matches('/').to_string(), v.clone())))
+            .collect()
+    }
+
+    /// `[tree]` conditions as (output-path globs, expression) pairs.
+    pub fn conditions(&self) -> Vec<(Vec<String>, String)> {
+        self.tree
+            .iter()
+            .filter_map(|(k, e)| e.when.as_ref().map(|w| (glob_for(k), w.clone())))
+            .collect()
     }
 
     fn validate(&self) -> Result<(), ManifestError> {
@@ -129,6 +176,36 @@ impl Manifest {
                     return Err(bad("`script` must be a relative path under .sc/"));
                 }
                 _ => {}
+            }
+        }
+        for (path, e) in &self.tree {
+            let bad = |reason: &str| ManifestError::InvalidTree { path: path.clone(), reason: reason.into() };
+            if e.marker.is_some() && e.merge != Some(MergeStrategy::Insert) {
+                return Err(bad("`marker` is only valid with merge = \"insert\""));
+            }
+            if e.merge == Some(MergeStrategy::Insert) && e.marker.as_deref().unwrap_or("").trim().is_empty() {
+                return Err(bad("merge = \"insert\" requires `marker`"));
+            }
+            if e.when.as_deref().is_some_and(|w| w.trim().is_empty()) {
+                return Err(bad("`when` is empty"));
+            }
+            if let Some(v) = &e.variants {
+                if !is_identifier(v) {
+                    return Err(bad("`variants` must name an input"));
+                }
+                if path.contains('*') || path.contains('?') {
+                    return Err(bad("a variant group is one path, not a glob"));
+                }
+            }
+        }
+        for (from, to) in &self.files.rename {
+            let bad = |reason: &str| ManifestError::InvalidRename { from: from.clone(), reason: reason.into() };
+            let to = to.trim_end_matches('/');
+            if from.trim_matches('/').is_empty() || to.is_empty() {
+                return Err(bad("both sides must be non-empty"));
+            }
+            if Path::new(to).components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                return Err(bad("the new name must be a plain relative path"));
             }
         }
         for m in &self.mounts {

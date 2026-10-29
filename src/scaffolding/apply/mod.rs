@@ -61,6 +61,8 @@ pub struct Outcome {
     pub kept: Vec<PathBuf>,
     /// Names of `after` hooks that ran.
     pub hooks: Vec<String>,
+    /// Files deleted because the render no longer produces them.
+    pub removed: Vec<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -122,6 +124,26 @@ pub async fn apply(plan: &Plan, opts: &Options, on_hook: &mut dyn FnMut(&Planned
         }
     };
     staged.commit()?;
+
+    // Dropped files go only if they still hold what the previous render
+    // wrote; anything edited since stays, like every other local edit.
+    for r in &plan.removals {
+        let abs = dest.join(&r.path);
+        match std::fs::read(&abs) {
+            Ok(bytes) if bytes == r.expected => {
+                std::fs::remove_file(&abs).map_err(|source| ApplyError::Io { path: abs.clone(), source })?;
+                outcome.removed.push(r.path.clone());
+                let mut dir = abs.parent();
+                while let Some(d) = dir.filter(|d| *d != dest) {
+                    if std::fs::remove_dir(d).is_err() {
+                        break; // not empty, or not ours
+                    }
+                    dir = d.parent();
+                }
+            }
+            _ => {}
+        }
+    }
 
     hooks::run_after(plan, dest, opts.hooks, on_hook, &mut outcome).await?;
     Ok(outcome)

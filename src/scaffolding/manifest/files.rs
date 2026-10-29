@@ -16,6 +16,9 @@ pub struct FileRules {
     /// Paths of raw files are still rendered.
     #[serde(default)]
     pub raw: Vec<String>,
+    /// Like `raw`, but matched against output paths; filled from `[tree]`.
+    #[serde(skip)]
+    pub raw_out: Vec<String>,
     /// Output-path globs that are created when absent but never touched once
     /// they exist, whatever the `--existing` policy says.
     #[serde(default)]
@@ -25,11 +28,25 @@ pub struct FileRules {
     #[serde(default)]
     pub merge: IndexMap<String, MergeRule>,
     /// A path component starting with this prefix is emitted with a leading
-    /// dot instead, so `dot_gitignore` becomes `.gitignore`. Templates kept
-    /// in git or published to registries need this because real dotfiles get
-    /// ignored or stripped. Set to "" to disable.
-    #[serde(default = "default_dot_prefix")]
+    /// dot instead, so with `dot_prefix = "_"`, `_gitignore` becomes
+    /// `.gitignore`. Off by default: keep real dotfiles, and put a template
+    /// under `template/` in its repository so its `.github/` is not the
+    /// repository's own. For a registry that strips dotfiles on publish,
+    /// turn it on.
+    #[serde(default)]
     pub dot_prefix: String,
+    /// Explicit output names for template entries, keyed by template-relative
+    /// path (a trailing slash is allowed for directories). The value replaces
+    /// that entry's name; its contents keep their own names underneath.
+    ///
+    /// ```toml
+    /// [files.rename]
+    /// "gitignore" = ".gitignore"
+    /// "github/" = ".github/"
+    /// ```
+    #[serde(default)]
+    pub rename: IndexMap<String, String>,
+
     /// Alternative delimiters for files whose own syntax clashes with the
     /// default `{{ }}`, matched by template-path glob.
     #[serde(default)]
@@ -38,8 +55,16 @@ pub struct FileRules {
     pub generate: Vec<Generate>,
 }
 
-fn default_dot_prefix() -> String {
-    "dot_".into()
+/// The value a variant candidate serves: its name minus a trailing
+/// extension, where an extension means a final `.word` made of letters.
+/// `node.Dockerfile` -> `node`, `prod` -> `prod`, `Apache-2.0` -> `Apache-2.0`.
+pub fn variant_stem(name: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphabetic()) => {
+            stem.to_string()
+        }
+        _ => name.to_string(),
+    }
 }
 
 impl Default for FileRules {
@@ -47,9 +72,11 @@ impl Default for FileRules {
         Self {
             exclude: vec![],
             raw: vec![],
+            raw_out: vec![],
             keep: vec![],
             merge: IndexMap::new(),
-            dot_prefix: default_dot_prefix(),
+            dot_prefix: String::new(),
+            rename: IndexMap::new(),
             syntax: vec![],
             generate: vec![],
         }
