@@ -183,7 +183,7 @@ pub async fn run(a: Args) -> Result {
             })
             .collect();
         let tags = if tags.is_empty() { String::new() } else { format!("  {}", tags.join(", ")) };
-        println!("{}{branch}{name}{tags}", prefix.magenta());
+        println!("{prefix}{branch}{name}{tags}");
     }
     Ok(())
 }

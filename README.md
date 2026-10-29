@@ -18,6 +18,8 @@ Every command either looks (`plan`, `tree`, `diff`, `where`, `status`,
 (`update`). Files you never touched follow the template, including going
 away when an input stops producing them; files you edited are yours.
 
+New here? Read the [tutorial](TUTORIAL.md).
+
 ## Install
 
 Download a static binary for macOS or Linux (x86_64 or arm64) from the
