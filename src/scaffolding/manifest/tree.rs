@@ -1,13 +1,6 @@
 //! `[tree]`: per-path rules keyed by output path, globs allowed. A key with
 //! a trailing slash covers a directory and everything under it.
 //!
-//! `variants = "VAR"` makes the key a variant group: its candidates live
-//! under `.sc/variants/<key>/`, named by the value of input `VAR` they
-//! serve, and the one matching the current value is emitted at the key.
-//! In the template's working tree the key is a symlink to the checked-out
-//! candidate, so the listing looks like the output and editing the file
-//! edits that variant. `sc checkout` switches it.
-//!
 //! ```toml
 //! [tree]
 //! ".github/"   = { when = "ci" }
@@ -31,8 +24,6 @@ use super::MergeStrategy;
 #[serde(deny_unknown_fields)]
 pub struct TreeEntry {
     pub when: Option<String>,
-    /// Name of the input whose value selects this path's variant.
-    pub variants: Option<String>,
     pub merge: Option<MergeStrategy>,
     pub marker: Option<String>,
     #[serde(default)]

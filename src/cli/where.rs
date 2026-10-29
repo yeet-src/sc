@@ -81,25 +81,6 @@ pub async fn run(a: Args) -> Result {
     } else {
         Some(inputs::resolve_lenient(&loaded.combined_manifest(), &a.vars.vars)?)
     };
-    // Inside the variant store, say which variant this is.
-    if let Some((key, value)) = describe::in_variant_store(&rel) {
-        let value = if root.join(&rel).is_dir() { value } else { crate::scaffolding::manifest::variant_stem(&value) };
-        let current = describe::checked_out(&root, &key).as_deref() == Some(value.as_str());
-        let note = if value.is_empty() {
-            format!("{} {}", "variants of".cyan(), key.display().to_string().blue().bold())
-        } else {
-            format!("{} variant {}{}", key.display().to_string().blue().bold(), value.green().bold(), if current { " (checked out)".magenta().to_string() } else { String::new() })
-        };
-        if short {
-            let name = loaded.manifest.template.name.clone().unwrap_or_default();
-            emit(format!("{} {} {note}", name.cyan().bold(), "›".cyan()), a.prompt);
-        } else {
-            println!("{} {}", "Template".cyan().bold(), loaded.manifest.template.name.clone().unwrap_or_default().green().bold());
-            println!("{} {}", "Here    ".cyan().bold(), rel.display().to_string().blue());
-            println!("{} {note}", "Is      ".cyan().bold());
-        }
-        return Ok(());
-    }
     let loc = describe::locate(&loaded, &rel, inputs.as_ref())?;
     let name = loaded.manifest.template.name.clone().unwrap_or_else(|| root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
 
@@ -115,12 +96,15 @@ pub async fn run(a: Args) -> Result {
             Tag::When { rule, holds: None } => notes.push(format!("when {rule}").yellow().to_string()),
             Tag::When { rule, holds: Some(true) } => notes.push(format!("when {rule}: on").green().to_string()),
             Tag::When { rule, holds: Some(false) } => notes.push(format!("when {rule}: off").red().to_string()),
-            Tag::Variants { var, choices, checked_out, chosen } => {
-                notes.push(super::tree::variants_note(var, choices, checked_out.as_deref(), chosen.as_deref()))
-            }
+            Tag::VariantGroup { output, var } => notes.push(format!("-> {output} by {var}").cyan().to_string()),
+            Tag::Variant { var, value, chosen: None } => notes.push(format!("{var} = {value}").yellow().to_string()),
+            Tag::Variant { var, value, chosen: Some(true) } => notes.push(format!("{var} = {value}: chosen").green().to_string()),
+            Tag::Variant { var, value, chosen: Some(false) } => notes.push(format!("{var} = {value}: not chosen").red().to_string()),
         }
     }
+    let in_group = matches!(loc.tags.last(), Some(Tag::VariantGroup { .. }));
     let output = match (&loc.output, loc.control) {
+        _ if in_group => String::new(),
         (_, true) => "never emitted".magenta().to_string(),
         (Some(o), _) if o.as_os_str().is_empty() => "/".blue().bold().to_string(),
         (Some(o), _) => format!("{}/", o.display()).blue().bold().to_string(),

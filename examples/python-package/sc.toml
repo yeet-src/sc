@@ -28,7 +28,6 @@ default = true
 
 [tree]
 ".github/"      = { when = "ci" }
-"LICENSE"       = { variants = "license" }
 "README.md"     = { keep = true }
 ".gitignore"    = { merge = "append-lines" }
 "pyproject.toml" = { merge = "toml" }

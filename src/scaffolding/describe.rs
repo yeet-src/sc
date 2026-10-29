@@ -89,11 +89,11 @@ pub enum Tag {
     /// Covered by a `[tree]` condition. `holds` is known only when inputs
     /// were given.
     When { rule: String, holds: Option<bool> },
-    /// A variant group: one of `choices` (from `.sc/variants/<path>/`) is
-    /// emitted here, selected by input `var`. `checked_out` is the variant
-    /// the working tree currently links to; `chosen` is the one the given
-    /// inputs select, known only when inputs were given.
-    Variants { var: String, choices: Vec<String>, checked_out: Option<String>, chosen: Option<String> },
+    /// A variant group directory: emits `output` from the child chosen by `var`.
+    VariantGroup { output: String, var: String },
+    /// A child of a variant group, serving this value. `chosen` is known
+    /// only when inputs were given.
+    Variant { var: String, value: String, chosen: Option<bool> },
 }
 
 /// Where a path inside a template ends up: for `sc where` and prompts.
@@ -108,28 +108,6 @@ pub struct Location {
     /// The path is control material (the manifest, `.sc/`, a mounted
     /// sub-template, `.git`) and is never emitted.
     pub control: bool,
-}
-
-/// The variant the working tree currently links `key` to, by reading the
-/// symlink's target under `.sc/variants/<key>/`.
-pub fn checked_out(root: &Path, key: &Path) -> Option<String> {
-    let target = std::fs::read_link(root.join(key)).ok()?;
-    let store = Path::new(CONTROL_DIR).join("variants").join(key);
-    let rest = target.strip_prefix(&store).ok()?;
-    let name = rest.components().next()?.as_os_str().to_string_lossy().into_owned();
-    Some(if root.join(&store).join(&name).is_dir() { name } else { crate::scaffolding::manifest::variant_stem(&name) })
-}
-
-/// If `rel` is inside the variant store, the group and value it belongs to.
-pub fn in_variant_store(rel: &Path) -> Option<(PathBuf, String)> {
-    let rest = rel.strip_prefix(Path::new(CONTROL_DIR).join("variants")).ok()?;
-    // The key may span several components; the value is the component right
-    // after the longest prefix that is a known key. Without the manifest we
-    // take the last component as the value and the rest as the key.
-    let value = rest.file_name()?.to_string_lossy().into_owned();
-    let key = rest.parent()?.to_path_buf();
-    // The group's own store directory: a key with no value yet.
-    if key.as_os_str().is_empty() { Some((PathBuf::from(value), String::new())) } else { Some((key, value)) }
 }
 
 /// Find the template that contains `dir`: the nearest ancestor holding a
@@ -147,7 +125,7 @@ pub fn find_template_root(dir: &Path) -> Option<PathBuf> {
 
 /// Describe one path inside a loaded template, relative to its root.
 pub fn locate(loaded: &Loaded, rel: &Path, inputs: Option<&Inputs>) -> Result<Location, DescribeError> {
-    let mut rules = Rules::new(&loaded.root, &loaded.manifest, &loaded.local_mount_dirs())?;
+    let mut rules = Rules::new(&loaded.manifest, &loaded.local_mount_dirs())?;
     if let Some(inputs) = inputs {
         let renderer = Renderer::new(&loaded.root.join(CONTROL_DIR));
         let ctx = inputs.context();
@@ -209,7 +187,7 @@ pub fn describe(loaded: &Loaded, inputs: Option<&Inputs>) -> Result<Description,
         .collect();
 
     let mut tree = Vec::new();
-    let mut rules = Rules::new(&loaded.root, m, &loaded.local_mount_dirs())?;
+    let mut rules = Rules::new(m, &loaded.local_mount_dirs())?;
     if let Some(inputs) = inputs {
         let renderer = Renderer::new(&loaded.root.join(CONTROL_DIR));
         let ctx = inputs.context();
@@ -256,15 +234,13 @@ struct Rules {
     rename: indexmap::IndexMap<String, String>,
     /// (output-path globs, expression, evaluated?) from `[tree]`.
     conditions: Vec<(GlobSet, String, Option<bool>)>,
-    /// Variant groups: output path -> selecting input.
-    variants: Vec<(PathBuf, String)>,
-    root: PathBuf,
+    variant_sep: String,
     /// Input values as text, when inputs were given.
     values: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl Rules {
-    fn new(root: &Path, m: &Manifest, mounts: &[PathBuf]) -> Result<Self, globset::Error> {
+    fn new(m: &Manifest, mounts: &[PathBuf]) -> Result<Self, globset::Error> {
         let set = |pats: &[String]| -> Result<(GlobSet, Vec<String>), globset::Error> {
             let mut b = GlobSetBuilder::new();
             for p in pats {
@@ -285,30 +261,19 @@ impl Rules {
             dot_prefix: m.files.dot_prefix.clone(),
             rename: m.files.rename.clone(),
             conditions,
-            variants: m.variant_groups().into_iter().map(|(k, v)| (PathBuf::from(k), v)).collect(),
-            root: root.to_path_buf(),
+            variant_sep: m.files.variant_sep.clone(),
             values: None,
         })
     }
 
-    /// The variant-group tag for an output path, if it is one.
-    fn variants_tag(&self, rel: &Path) -> Option<Tag> {
-        let (_, var) = self.variants.iter().find(|(k, _)| k == rel)?;
-        let store = self.root.join(CONTROL_DIR).join("variants").join(rel);
-        let mut choices: Vec<String> = std::fs::read_dir(&store)
-            .map(|rd| {
-                rd.flatten()
-                    .map(|e| {
-                        let name = e.file_name().to_string_lossy().into_owned();
-                        if e.path().is_dir() { name } else { crate::scaffolding::manifest::variant_stem(&name) }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        choices.sort();
-        let checked_out = checked_out(&self.root, rel);
-        let chosen = self.values.as_ref().and_then(|v| v.get(var)).filter(|c| choices.contains(c)).cloned();
-        Some(Tag::Variants { var: var.clone(), choices, checked_out, chosen })
+    /// `NAME<sep>VAR` -> (NAME, VAR).
+    fn variant_group(&self, name: &str) -> Option<(String, String)> {
+        if self.variant_sep.is_empty() {
+            return None;
+        }
+        let (base, var) = name.rsplit_once(&self.variant_sep)?;
+        (!base.is_empty() && !var.is_empty() && var.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()))
+            .then(|| (base.to_string(), var.to_string()))
     }
 
     /// The output path of a template path with no template syntax in it:
@@ -316,12 +281,22 @@ impl Rules {
     fn output_path(&self, rel: &Path) -> Option<PathBuf> {
         let mut out = PathBuf::new();
         let mut so_far = PathBuf::new();
+        let mut skip_next = false;
         for c in rel.components() {
-            let name = c.as_os_str().to_string_lossy().into_owned();
+            let mut name = c.as_os_str().to_string_lossy().into_owned();
             if name.contains("{{") || name.contains("{%") {
                 return None;
             }
             so_far.push(&name);
+            if skip_next {
+                // The chosen child of a group takes the group's name.
+                skip_next = false;
+                continue;
+            }
+            if let Some((base, _)) = self.variant_group(&name) {
+                name = base;
+                skip_next = true;
+            }
             let key = so_far.display().to_string();
             let mapped = match self.rename.get(&key).or_else(|| self.rename.get(&format!("{key}/"))) {
                 Some(to) => to.trim_end_matches('/').to_string(),
@@ -348,8 +323,15 @@ impl Rules {
         if let (false, Some(&i)) = (is_dir, self.raw.0.matches(rel).first()) {
             tags.push(Tag::Raw { rule: self.raw.1[i].clone() });
         }
-        if let Some(t) = self.variants_tag(rel) {
-            tags.push(t);
+        let name_now = rel.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if let (true, Some((output, var))) = (is_dir, self.variant_group(&name_now)) {
+            tags.push(Tag::VariantGroup { output, var });
+            return tags;
+        }
+        if let Some((_, var)) = rel.parent().and_then(|p| p.file_name()).and_then(|n| self.variant_group(&n.to_string_lossy())) {
+            let value = if is_dir { name_now.clone() } else { crate::scaffolding::manifest::variant_stem(&name_now) };
+            let chosen = self.values.as_ref().map(|v| v.get(&var) == Some(&value));
+            tags.push(Tag::Variant { var, value, chosen });
         }
         if let Some(out) = self.output_path(rel) {
             for (set, expr, holds) in &self.conditions {
@@ -460,24 +442,16 @@ mod tests {
         let e = d.tree.iter().find(|e| e.path == Path::new("_github")).unwrap();
         assert!(e.tags.contains(&Tag::When { rule: "ci".into(), holds: Some(false) }));
 
-        // Variant groups: a manifest entry, a store, and a checked-out link.
-        fs::write(dir.path().join("sc.toml"), "[vars.ci]\ntype = \"bool\"\ndefault = true\n[files]\ndot_prefix = \"_\"\n[tree]\n\".github/\" = { when = \"ci\" }\n\"README.md\" = { variants = \"ci\" }\n").unwrap();
-        fs::create_dir_all(dir.path().join(".sc/variants/README.md")).unwrap();
-        fs::write(dir.path().join(".sc/variants/README.md/true.md"), "").unwrap();
-        fs::write(dir.path().join(".sc/variants/README.md/false.md"), "").unwrap();
-        fs::remove_file(dir.path().join("README.md")).unwrap();
-        std::os::unix::fs::symlink(".sc/variants/README.md/true.md", dir.path().join("README.md")).unwrap();
+        // Variant groups.
+        fs::create_dir_all(dir.path().join("README.md@ci")).unwrap();
+        fs::write(dir.path().join("README.md@ci/true.md"), "").unwrap();
+        fs::write(dir.path().join("README.md@ci/false.md"), "").unwrap();
         let loaded = compose::load(&dir.path().display().to_string(), None, &Default::default()).await.unwrap();
         let inputs = crate::scaffolding::inputs::resolve(&loaded.combined_manifest(), &[("ci".into(), "false".into())]).unwrap();
         let d = describe(&loaded, Some(&inputs)).unwrap();
         let tag = |p: &str| d.tree.iter().find(|e| e.path == Path::new(p)).map(|e| e.tags.clone()).unwrap_or_else(|| panic!("{p}"));
-        assert!(tag("README.md").contains(&Tag::Variants {
-            var: "ci".into(),
-            choices: vec!["false".into(), "true".into()],
-            checked_out: Some("true".into()),
-            chosen: Some("false".into()),
-        }));
-        assert_eq!(checked_out(dir.path(), Path::new("README.md")).as_deref(), Some("true"));
-        assert_eq!(in_variant_store(Path::new(".sc/variants/README.md/false.md")), Some((PathBuf::from("README.md"), "false.md".into())));
+        assert_eq!(tag("README.md@ci"), [Tag::VariantGroup { output: "README.md".into(), var: "ci".into() }]);
+        assert!(tag("README.md@ci/false.md").contains(&Tag::Variant { var: "ci".into(), value: "false".into(), chosen: Some(true) }));
+        assert!(tag("README.md@ci/true.md").contains(&Tag::Variant { var: "ci".into(), value: "true".into(), chosen: Some(false) }));
     }
 }

@@ -260,8 +260,6 @@ pub enum PlanError {
     ReservedPath,
     #[error("{group}: variant group selects on `{var}`, which is not an input")]
     UnknownVariantInput { group: String, var: String },
-    #[error("{group}: variant group has no candidates; expected a directory at {store}")]
-    NoVariantStore { group: String, store: String },
     #[error("serializing answers file: {0}")]
     Answers(#[from] toml::ser::Error),
     #[error("merging {path} ({}): {source}", strategy.name())]

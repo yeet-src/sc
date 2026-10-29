@@ -46,6 +46,11 @@ pub struct FileRules {
     /// ```
     #[serde(default)]
     pub rename: IndexMap<String, String>,
+    /// A directory named `NAME<sep>VAR/` is a variant group: of its children,
+    /// the one whose stem equals the value of input `VAR` is emitted as
+    /// `NAME`; no match emits nothing. Set to "" to disable.
+    #[serde(default = "default_variant_sep")]
+    pub variant_sep: String,
 
     /// Alternative delimiters for files whose own syntax clashes with the
     /// default `{{ }}`, matched by template-path glob.
@@ -53,6 +58,11 @@ pub struct FileRules {
     pub syntax: Vec<Syntax>,
     #[serde(default)]
     pub generate: Vec<Generate>,
+}
+
+/// Separator in variant group directory names, `NAME<sep>VAR/`; "" disables.
+fn default_variant_sep() -> String {
+    "@".into()
 }
 
 /// The value a variant candidate serves: its name minus a trailing
@@ -77,6 +87,7 @@ impl Default for FileRules {
             merge: IndexMap::new(),
             dot_prefix: String::new(),
             rename: IndexMap::new(),
+            variant_sep: default_variant_sep(),
             syntax: vec![],
             generate: vec![],
         }

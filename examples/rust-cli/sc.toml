@@ -21,7 +21,6 @@ exclude = ["*.orig"]
 
 [tree]
 ".github/" = { when = "ci" }
-"LICENSE" = { variants = "license" }
 "README.md" = { keep = true }
 "Cargo.toml" = { merge = "toml" }
 ".gitignore" = { merge = "append-lines" }

@@ -112,7 +112,7 @@ pub async fn run(a: Args) -> Result {
             "Entering".cyan().bold(),
             name.green().bold(),
             root.display().to_string().blue(),
-            "The prompt shows what the current directory becomes. Try `sc tree`, `sc checkout`, `sc where`. Type `exit` to leave.".yellow()
+            "The prompt shows what the current directory becomes. Try `sc tree`, `sc plan .`, `sc where`. Type `exit` to leave.".yellow()
         );
     }
     let status = cmd.status().await?;

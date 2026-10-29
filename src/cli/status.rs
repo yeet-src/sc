@@ -19,6 +19,7 @@ pub struct Args {
 }
 
 pub async fn run(a: Args) -> Result {
+    super::require_project(&a.dest)?;
     let opts = update::Options {
         fetch: source::Options { offline: a.offline, cache_dir: None },
         pin: true,
@@ -60,7 +61,7 @@ pub async fn run(a: Args) -> Result {
     if !stale.is_empty() {
         println!(
             "  {}",
-            format!("{} file(s) would change if re-rendered now; run `sc set` or `sc update --plan-only` to see", stale.len()).magenta()
+            format!("{} file(s) would change if re-rendered now; run `sc rederive --plan-only` to see", stale.len()).magenta()
         );
     }
     Ok(())

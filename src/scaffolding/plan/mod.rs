@@ -102,15 +102,13 @@ pub fn plan(
         ctx: shell::Context::new(template_root, &inputs, template_root, dest),
         log: Mutex::new(Vec::new()),
     });
-    let variant_groups = manifest.variant_groups();
-    let variant_outputs: Vec<PathBuf> = variant_groups.iter().map(|(k, _)| PathBuf::from(k)).collect();
     let mut planner = Planner {
         root: template_root,
         extra_control: &opts.extra_control,
         renderers: Renderers::new(template_root, manifest, &shell_state)?,
         dot_prefix: &manifest.files.dot_prefix,
         rename: &manifest.files.rename,
-        variant_outputs: &variant_outputs,
+        variant_sep: &manifest.files.variant_sep,
         ctx: inputs.context(),
         exclude: Rules::new(&manifest.files.exclude)?,
         raw: Rules::new(&manifest.files.raw)?,
@@ -120,9 +118,6 @@ pub fn plan(
         warnings: Vec::new(),
     };
     planner.walk(Path::new(""), Path::new(""))?;
-    for (key, var) in &variant_groups {
-        planner.variant(key, var)?;
-    }
 
     for g in &manifest.files.generate {
         let path = planner.renderers.default.render("generate.path", &g.path, &planner.ctx)?;
@@ -418,41 +413,40 @@ mod tests {
     #[test]
     fn variant_groups_pick_by_input_value() {
         let dir = fixture(&[
-            ("sc.toml", b"[vars.public]\ntype = \"bool\"\ndefault = true\n[vars.env]\ntype = \"choice\"\nchoices = [\"dev\", \"prod\", \"test\"]\ndefault = \"dev\"\n[vars.runtime]\ndefault = \"node\"\n[tree]\n\"README.md\" = { variants = \"public\" }\n\"Dockerfile\" = { variants = \"runtime\" }\n\"config/\" = { variants = \"env\" }\n\"config/secrets.yaml\" = { variants = \"public\" }\n"),
-            (".sc/variants/README.md/true.md", b"# public {{ env }}\n"),
-            (".sc/variants/Dockerfile/node.Dockerfile", b"FROM node\n"),
-            (".sc/variants/Dockerfile/python.Dockerfile", b"FROM python\n"),
-            (".sc/variants/config/dev/app.yaml", b"debug: true\n"),
-            (".sc/variants/config/prod/app.yaml", b"debug: false\n"),
-            (".sc/variants/config/secrets.yaml/false.yaml", b"hidden\n"),
+            ("sc.toml", b"[vars.public]\ntype = \"bool\"\ndefault = true\n[vars.env]\ntype = \"choice\"\nchoices = [\"dev\", \"prod\", \"test\"]\ndefault = \"dev\"\n[vars.runtime]\ndefault = \"node\"\n"),
+            ("README.md@public/true.md", b"# public {{ env }}\n"),
+            ("Dockerfile@runtime/node.Dockerfile", b"FROM node\n"),
+            ("Dockerfile@runtime/python.Dockerfile", b"FROM python\n"),
+            ("config@env/dev/app.yaml", b"debug: true\n"),
+            ("config@env/dev/secrets.yaml@public/false.yaml", b"hidden\n"),
+            ("config@env/prod/app.yaml", b"debug: false\n"),
+            ("LICENSE@license/Apache-2.0", b"apache\n"),
             ("plain.txt", b"p"),
         ]);
-        // The working tree holds a checked-out symlink, which the planner ignores.
-        std::os::unix::fs::symlink(".sc/variants/README.md/true.md", dir.path().join("README.md")).unwrap();
-
-        let plan = run(dir.path(), None, &[]).unwrap();
-        assert_eq!(paths(&plan), [".sc.toml", "Dockerfile", "README.md", "config", "config/app.yaml", "plain.txt"]);
+        let plan = run(dir.path(), None, &[("license", "Apache-2.0")]).unwrap();
+        assert_eq!(paths(&plan), [".sc.toml", "Dockerfile", "LICENSE", "README.md", "config", "config/app.yaml", "plain.txt"]);
         let text = |plan: &Plan, p: &str| match &plan.ops.iter().find(|o| o.path == Path::new(p)).unwrap().kind {
             OpKind::WriteFile { content: Content::Text(t), .. } => t.clone(),
             _ => panic!("{p}"),
         };
         assert_eq!(text(&plan, "README.md"), "# public dev\n");
         assert_eq!(text(&plan, "Dockerfile"), "FROM node\n");
-        assert_eq!(plan.ops.iter().find(|o| o.path == Path::new("Dockerfile")).unwrap().template_path, Path::new(".sc/variants/Dockerfile/node.Dockerfile"));
-        assert!(!plan.ops.iter().any(|o| matches!(o.kind, OpKind::Symlink { .. })), "the checkout link is not emitted");
+        assert_eq!(text(&plan, "LICENSE"), "apache\n", "a dotted value matches a whole extensionless name");
+        assert_eq!(plan.ops.iter().find(|o| o.path == Path::new("Dockerfile")).unwrap().template_path, Path::new("Dockerfile@runtime/node.Dockerfile"));
         assert!(plan.dropped.iter().any(|d| matches!(&d.reason, DropReason::NoVariant { var, value, available } if var == "public" && value == "true" && available == &["false"])));
 
-        let plan = run(dir.path(), None, &[("public", "false"), ("env", "prod"), ("runtime", "ruby")]).unwrap();
-        assert_eq!(paths(&plan), [".sc.toml", "config", "config/app.yaml", "config/secrets.yaml", "plain.txt"]);
+        let plan = run(dir.path(), None, &[("public", "false"), ("env", "prod"), ("runtime", "ruby"), ("license", "x")]).unwrap();
+        assert_eq!(paths(&plan), [".sc.toml", "config", "config/app.yaml", "plain.txt"]);
         assert_eq!(text(&plan, "config/app.yaml"), "debug: false\n");
-        assert_eq!(text(&plan, "config/secrets.yaml"), "hidden\n");
         assert!(plan.dropped.iter().any(|d| matches!(&d.reason, DropReason::NoVariant { var, available, .. } if var == "runtime" && available == &["node", "python"])));
 
-        let bad = fixture(&[("sc.toml", b"[tree]\n\"x\" = { variants = \"nope\" }\n"), (".sc/variants/x/a", b"")]);
-        let err = run(bad.path(), None, &[]).unwrap_err();
-        assert!(matches!(err, PlanError::UnknownVariantInput { .. }), "{err}");
-        let missing = fixture(&[("sc.toml", b"[vars.v]\ndefault = \"a\"\n[tree]\n\"x\" = { variants = \"v\" }\n")]);
-        assert!(matches!(run(missing.path(), None, &[]).unwrap_err(), PlanError::NoVariantStore { .. }));
+        let plan = run(dir.path(), None, &[("public", "false"), ("env", "dev"), ("license", "x")]).unwrap();
+        assert_eq!(text(&plan, "config/secrets.yaml"), "hidden\n", "nested group inside a chosen directory");
+
+        let bad = fixture(&[("x@nope/a", b"")]);
+        assert!(matches!(run(bad.path(), None, &[]).unwrap_err(), PlanError::UnknownVariantInput { .. }));
+        let off = fixture(&[("sc.toml", b"[files]\nvariant_sep = \"\"\n"), ("a@b/c", b"")]);
+        assert_eq!(paths(&run(off.path(), None, &[]).unwrap()), [".sc.toml", "a@b", "a@b/c"]);
     }
 
     #[test]

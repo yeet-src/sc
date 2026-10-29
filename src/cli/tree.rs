@@ -21,24 +21,6 @@ pub struct Args {
     all: bool,
 }
 
-/// `one of MIT, Apache-2.0 by license; checked out MIT` with the chosen one
-/// marked when inputs were given.
-pub fn variants_note(var: &str, choices: &[String], checked_out: Option<&str>, chosen: Option<&str>) -> String {
-    let list = choices
-        .iter()
-        .map(|c| match (chosen, checked_out) {
-            (Some(ch), _) if ch == c => format!("{c}*").green().bold().to_string(),
-            _ => c.yellow().to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    let out = match checked_out {
-        Some(c) => format!("; checked out {c}").magenta().to_string(),
-        None => "; nothing checked out".red().to_string(),
-    };
-    format!("{} {list} {}{out}", "one of".cyan(), format!("by {var}").cyan())
-}
-
 pub async fn run(a: Args) -> Result {
     let loaded = a.template.load().await?;
     let inputs = if a.vars.vars.is_empty() {
@@ -179,7 +161,10 @@ pub async fn run(a: Args) -> Result {
                 Tag::When { rule, holds: None } => format!("when {rule}").yellow().to_string(),
                 Tag::When { rule, holds: Some(true) } => format!("when {rule}: on").green().to_string(),
                 Tag::When { rule, holds: Some(false) } => format!("when {rule}: off").red().to_string(),
-                Tag::Variants { var, choices, checked_out, chosen } => variants_note(var, choices, checked_out.as_deref(), chosen.as_deref()),
+                Tag::VariantGroup { output, var } => format!("-> {output}, one of these by {var}").cyan().to_string(),
+                Tag::Variant { var, value, chosen: None } => format!("{var} = {value}").yellow().to_string(),
+                Tag::Variant { var, value, chosen: Some(true) } => format!("{var} = {value}: chosen").green().bold().to_string(),
+                Tag::Variant { var, value, chosen: Some(false) } => format!("{var} = {value}").red().to_string(),
             })
             .collect();
         let tags = if tags.is_empty() { String::new() } else { format!("  {}", tags.join(", ")) };

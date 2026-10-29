@@ -58,7 +58,7 @@ destination already has files.
 ### Apply
 
 ```
-sc apply examples/python-package ./tools -v name=yeet-tools -v license=Apache-2.0
+sc fork examples/python-package ./tools -v name=yeet-tools -v license=Apache-2.0
 ```
 
 Same plan, then a `[y/N]`, then the writes and the `git init` hook. In CI
@@ -84,7 +84,7 @@ Files
 Now turn CI off and switch the license:
 
 ```
-sc set ci=false license=MIT
+sc rederive ci=false license=MIT
 ```
 
 ```
@@ -96,33 +96,33 @@ x .github/workflows/ci.yml  no longer produced; unchanged locally, will be remov
 
 Read that plan: your README is kept because the template says so, your
 `pyproject.toml` edit is merged with the template's, and the workflow file
-is removed because you never touched it. `sc set ci=true` brings it back.
+is removed because you never touched it. `sc rederive ci=true` brings it back.
 
 ### Follow the template
 
 When the template's author publishes a new version:
 
 ```
-sc update --diff --plan-only
-sc update
+sc rederive --diff --plan-only
+sc rederive
 ```
 
-For a git template, `update` renders the version you came from as a common
+For a git template, `rederive` renders the version you came from as a common
 ancestor and three-way merges: untouched files take the new version, files
 the template didn't change keep your edits, files both of you changed are
 merged line by line, with conflict markers only where hunks overlap. Pin a
-tag (`gh:org/tpl#v2`) and `update` moves only when you bump it with
+tag (`gh:org/tpl#v2`) and `rederive` moves only when you bump it with
 `--ref`.
 
 ### Combine templates
 
 ```
-sc apply ./project ./app --with gh:acme/ci-template#v1 -v name=app
+sc fork ./project ./app --with gh:acme/ci-template#v1 -v name=app
 ```
 
 Inputs are the union of both templates. Where both produce a path and
 either has a merge rule for it, the files merge; otherwise the main
-template wins. The combination is recorded, so `update` applies it again.
+template wins. The combination is recorded, so `rederive` applies it again.
 
 ## Part 2: making a template
 
@@ -219,34 +219,21 @@ sc tree . -v ci=false
 
 ### Variants
 
-When a path has several versions, keep them in the store and declare the
-group:
-
-```toml
-[tree]
-"LICENSE" = { variants = "license" }
-```
+When a path has several versions, put them in a directory named after the
+output and the input that picks:
 
 ```
-.sc/variants/LICENSE/MIT
-.sc/variants/LICENSE/Apache-2.0
+LICENSE@license/
+  MIT
+  Apache-2.0
 ```
 
-The variant whose name equals the input's value is emitted at `LICENSE`;
-no match emits nothing (so `license = "none"` works with no file).
-Directories work the same way, as `"config/" = { variants = "env" }` with
-`.sc/variants/config/dev/` and `prod/`.
+The child whose name equals the input's value is emitted as `LICENSE`; no
+match emits nothing (so `license = "none"` works with no file). Directories
+work the same way: `config@env/dev/` and `config@env/prod/`. That's the
+whole mechanism: no declaration, no state, just files you can see.
 
-In your working tree, `LICENSE` is a symlink to one of them:
-
-```
-sc checkout license=Apache-2.0      # LICENSE -> .sc/variants/LICENSE/Apache-2.0
-sc variant add LICENSE GPL-3.0      # a new one, copied from the checked-out one
-```
-
-So `ls` shows `LICENSE`, your editor opens it, and saving edits that
-variant. The planner reads the store, never the link, so what you have
-checked out never changes what the template produces.
+`sc tree . -v license=MIT` marks the chosen one.
 
 ### Lock the output
 
@@ -306,14 +293,13 @@ tell users to pin them: `gh:you/my-template#v1`.
 | --- | --- |
 | see what a template asks and makes | `sc tree <tpl>` |
 | see what would happen | `sc plan <tpl> <dir> -v k=v` |
-| render a project | `sc apply <tpl> <dir> -v k=v` |
+| render a project | `sc fork <tpl> <dir> -v k=v` |
 | see what I've edited | `sc status` |
-| change inputs | `sc set k=v` |
-| take a newer template version | `sc update` |
-| combine two templates | `sc apply <tpl> <dir> --with <tpl2>` |
+| change inputs | `sc rederive k=v` |
+| take a newer template version | `sc rederive` |
+| combine two templates | `sc fork <tpl> <dir> --with <tpl2>` |
 | start a template | `sc new <dir>` |
 | work inside one | `sc enter <dir>` |
 | compare two input sets | `sc diff <tpl> -v a=1 -- -v a=2` |
 | check golden tests | `sc test <tpl>` |
-| switch a variant | `sc checkout k=v` |
 | keep a rendered tree in sync | `sc dev <tpl> <scratch>` |

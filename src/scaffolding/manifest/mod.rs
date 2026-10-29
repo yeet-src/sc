@@ -150,14 +150,6 @@ impl Manifest {
         }
     }
 
-    /// `[tree]` variant groups as (output path, selecting input) pairs.
-    pub fn variant_groups(&self) -> Vec<(String, String)> {
-        self.tree
-            .iter()
-            .filter_map(|(k, e)| e.variants.as_ref().map(|v| (k.trim_end_matches('/').to_string(), v.clone())))
-            .collect()
-    }
-
     /// `[tree]` conditions as (output-path globs, expression) pairs.
     pub fn conditions(&self) -> Vec<(Vec<String>, String)> {
         self.tree
@@ -188,14 +180,6 @@ impl Manifest {
             }
             if e.when.as_deref().is_some_and(|w| w.trim().is_empty()) {
                 return Err(bad("`when` is empty"));
-            }
-            if let Some(v) = &e.variants {
-                if !is_identifier(v) {
-                    return Err(bad("`variants` must name an input"));
-                }
-                if path.contains('*') || path.contains('?') {
-                    return Err(bad("a variant group is one path, not a glob"));
-                }
             }
         }
         for (from, to) in &self.files.rename {

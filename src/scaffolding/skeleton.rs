@@ -44,18 +44,16 @@ default = true
 # "src/lib.rs" = {{ merge = "insert", marker = "// sc:modules" }}
 # "assets/**"  = {{ raw = true }}                   # copied byte-for-byte, not rendered
 
-# Variants: `"LICENSE" = {{ variants = "license" }}` in [tree] emits one of
-# .sc/variants/LICENSE/<value> at LICENSE, chosen by the license input;
-# `sc checkout license=MIT` links LICENSE to that variant in this tree.
+# Variants: a directory `LICENSE@license/` holding `MIT` and `Apache-2.0`
+# emits the one matching the license input as LICENSE, or nothing.
 #
 # How template entries are named and treated.
 # [files]
 # exclude = ["*.orig"]              # never emitted (template-path globs)
 # dot_prefix = "_"                  # _gitignore -> .gitignore; off by default
 #
-# Variants: `"LICENSE" = {{ variants = "license" }}` in [tree] emits one of
-# .sc/variants/LICENSE/<value> at LICENSE, chosen by the license input;
-# `sc checkout license=MIT` links LICENSE to that variant in this tree.
+# Variants: a directory `LICENSE@license/` holding `MIT` and `Apache-2.0`
+# emits the one matching the license input as LICENSE, or nothing.
 #
 # [files.rename]                    # or name entries explicitly
 # "gitignore" = ".gitignore"

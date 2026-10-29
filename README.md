@@ -5,7 +5,7 @@ renders a project. Point it at the same project later and it merges in what
 the template changed since, without losing your edits.
 
 ```
-sc apply gh:yeet-src/templates --subdir rust-cli ./my-app -v name="My App"
+sc fork gh:yeet-src/templates --subdir rust-cli ./my-app -v name="My App"
 ```
 
 `sc` never writes before showing you a plan, and the plan tells you exactly
@@ -14,8 +14,7 @@ what each file will do: create, modify, merge, keep, or conflict.
 **The one rule.** A project is `render(template @ version, inputs)` plus your
 edits on top. The inputs live in `.sc.toml`, and nothing else is state.
 Every command either looks (`plan`, `tree`, `diff`, `where`, `status`,
-`test`), changes the inputs (`set`), or changes the template version
-(`update`). Files you never touched follow the template, including going
+`test`), changes the inputs or the template version (`rederive`). Files you never touched follow the template, including going
 away when an input stops producing them; files you edited are yours.
 
 New here? Read the [tutorial](TUTORIAL.md).
@@ -37,9 +36,8 @@ Git templates need `git` and `tar` on the path.
 | Command | What it does |
 | --- | --- |
 | `sc plan <template> [dest]` | Show what would happen. Writes nothing. |
-| `sc apply <template> <dest>` | Show the plan, confirm, write. |
-| `sc update [dest]` | Re-apply the template a project came from, at its newest version. |
-| `sc set KEY=VALUE...` | Change a project's inputs and re-derive its tree, same template version. |
+| `sc fork <template> <dest>` | Show the plan, confirm, write. The project remembers its template. |
+| `sc rederive [KEY=VALUE...] [--ref v]` | Recompute the project from its template: newer version, new inputs, or both. Your edits are kept. |
 | `sc status [dest]` | Show a project's template, inputs, and files edited since the last render. |
 | `sc test <template>` | Run a template's golden tests. |
 | `sc tree <template>` | Show a template's inputs and file tree without rendering it. |
@@ -47,8 +45,6 @@ Git templates need `git` and `tar` on the path.
 | `sc dev <template> <scratch>` | Keep a scratch directory rendered while you edit the template. |
 | `sc where [path]` | Say where a directory inside a template ends up in the output. |
 | `sc enter [template]` | Open a shell inside a template with a prompt that says where you are. |
-| `sc checkout KEY=VALUE...` | Point a template's variant links at the variants these inputs select. |
-| `sc variant add GROUP VALUE` | Add a variant to a group's store. |
 | `sc new <dir>` | Create a starter template. |
 
 A template is a directory, `gh:owner/repo`, `gl:owner/repo`, or any git URL.
@@ -85,7 +81,7 @@ Plan: 1 to create, 1 to merge, 1 kept, 1 unchanged. 253 B to write.
 | `+` | Nothing exists there; the file will be created. |
 | `~` | A file exists with different content; it will be replaced. |
 | `>` | A file exists and a merge rule combines the two. |
-| `*` | `update` three-way merged your edits with the template's changes. Red means conflict markers. |
+| `*` | `rederive` three-way merged your edits with the template's changes. Red means conflict markers. |
 | `=` | Already identical. Nothing happens. |
 | `-` | A `keep` rule says leave it alone. |
 | `!` | Something incompatible is there, like a directory where a file goes. |
@@ -96,7 +92,7 @@ why. `--json` gives the whole plan as data.
 
 ### Existing files
 
-By default `apply` refuses to run if any file would be replaced or conflicts.
+By default `fork` refuses to run if any file would be replaced or conflicts.
 `--existing skip` leaves those files alone and writes the rest.
 `--existing overwrite` replaces them. Conflicts, where a directory sits where
 a file goes, are never resolved automatically.
@@ -105,38 +101,34 @@ Writes are staged and then renamed into place, so a failure part-way leaves
 the destination as it was. If a file changed between plan and apply, `sc`
 notices and stops.
 
-### Changing inputs
+### Rederiving
+
+Every fork writes `.sc.toml` into the project recording the template, its
+commit if it came from git, and every input. `rederive` reads it and
+recomputes the project, then replays your edits on top:
 
 ```
-sc set ci=false                 # the .github/ directory goes away, if you never edited it
-sc set --case with-ci           # switch to a golden case's complete input set
-sc status                       # template, version, inputs, and local edits
+sc rederive                          # newest template version, same inputs
+sc rederive --ref v5                 # a specific version
+sc rederive ci=false                 # same version, one input changed
+sc rederive --case minimal           # same version, a golden case's whole input set
+sc status                            # template, version, inputs, and local edits
 ```
 
-`set` stays on the template version the project was generated from and
-re-derives the tree from the new inputs. A file the new inputs no longer
-produce is removed if it still holds what the previous render wrote, and
-kept if you changed it. The plan shows removals as `x` and says how many
-files carry local edits.
+For git templates the previous commit is rendered as a common ancestor, so
+for every file:
 
-### Updating
-
-Every apply writes `.sc.toml` into the destination recording the template,
-its commit if it came from git, and every input. `sc update` reads it,
-fetches the newest version of the template, and plans against the project.
-
-For git templates the previous commit is rendered as a common ancestor, so:
-
-- a file you never touched takes the new version;
-- a file the template did not change keeps your edits;
-- a file both of you changed is merged, with conflict markers where hunks
+- never touched by you: takes the new version, or goes away if the template
+  no longer produces it;
+- unchanged in the template: keeps your edits;
+- changed by both: merged line by line, with conflict markers where hunks
   overlap. Conflicted files are refused unless you pass `--existing overwrite`.
 
-`--ref` moves to a different branch or tag. `-v` changes an input; everything
-else comes from the answers file. `--plan-only` shows without writing.
-
-Pin templates to a tag or commit (`gh:org/repo#v2`) if you want `update` to
-move only when you say so.
+The plan shows removals as `x` and says how many files carry local edits.
+`--plan-only` shows without writing. Pin templates to a tag or commit
+(`gh:org/repo#v2`) if you want the version to move only when you bump
+`--ref`. `pull` (always newest) and `set` (always the recorded version)
+remain as aliases.
 
 ## Writing a template
 
@@ -152,8 +144,8 @@ my-template/
   src/{{ name | snake_case }}.rs      and inside paths
   .gitignore                a real dotfile; nothing special
   .github/workflows/ci.yml  present only when [tree] says so, see below
-  LICENSE                   a link to the checked-out variant, see Variants
-  .sc/variants/LICENSE/     MIT, Apache-2.0
+  LICENSE@license/MIT       one of these becomes LICENSE, picked by the license input
+  LICENSE@license/Apache-2.0
 ```
 
 Templates use [minijinja](https://github.com/mitsuhiko/minijinja), a Jinja2
@@ -184,7 +176,7 @@ prints that line, colored and escaped for the shell, and nothing outside a
 template.
 
 ```
-~/tpl/.sc/variants/config/prod   [rust-cli config variant prod]
+~/tpl/config@env/prod       rust-cli › -> config by env, env = prod
 ~/tpl/.github/workflows     [rust-cli .github/workflows/ when ci]
 ~/tpl/.sc/partials          [rust-cli never emitted control]
 ```
@@ -242,40 +234,28 @@ shows exactly what changes between two sets.
 
 ### Variants
 
-A path can have several versions, one per value of an input. Declare the
-group in the manifest and keep the versions in the store:
-
-```toml
-[tree]
-"LICENSE" = { variants = "license" }      # one of .sc/variants/LICENSE/*
-"config/" = { variants = "env" }          # directories work the same way
-```
+A directory named `NAME@VAR/` holds several versions of `NAME`, one per
+value of input `VAR`. The child whose name (minus an alphabetic extension)
+equals the value is emitted as `NAME`; no match emits nothing. Children can
+be files or directories, and groups nest. There is nothing to declare and
+nothing to check out: the versions are ordinary files you can see and edit.
 
 ```
-.sc/variants/LICENSE/MIT
-.sc/variants/LICENSE/Apache-2.0
-.sc/variants/config/dev/app.yaml
-.sc/variants/config/prod/app.yaml
+README.md@public/        public = true  -> README.md from true.md
+  true.md                public = false -> nothing
+Dockerfile@runtime/      runtime = "node" -> Dockerfile from node.Dockerfile
+  node.Dockerfile
+  python.Dockerfile
+config@env/              env = "prod" -> config/app.yaml from prod/
+  dev/app.yaml
+  prod/app.yaml
 ```
 
-The one whose name (minus an alphabetic extension) equals the input's value
-is emitted at the group's path. No match emits nothing, and `sc plan
---verbose` says so, so declare the input as a `choice`.
-
-In the template's working tree the group's path is a symlink to the
-checked-out variant, so `ls` shows `LICENSE`, your editor opens it, and
-saving edits that variant:
-
-```
-sc checkout license=Apache-2.0       # LICENSE -> .sc/variants/LICENSE/Apache-2.0
-sc checkout --case with-ci           # every group, from a golden case's inputs
-sc checkout                          # what is checked out now
-sc variant add LICENSE GPL-3.0       # a new variant, copied from the checked-out one
-sc variant list
-```
-
-The planner always reads the store, never the links, so what is checked
-out never changes what a template produces.
+Declare the selecting input as a `choice` so a misspelled value is rejected
+instead of silently emitting nothing; `sc plan --verbose` lists groups that
+matched nothing. `sc tree` shows each group's children with the value they
+serve and marks the chosen one under `-v`. The `@` is configurable as
+`variant_sep` under `[files]`.
 
 ### Other file rules
 
@@ -351,11 +331,11 @@ rather than replacing it.
 From the command line, for any combination:
 
 ```
-sc apply ./project ./my-app --with gh:org/ci-template#v2 -v name="My App"
+sc fork ./project ./my-app --with gh:org/ci-template#v2 -v name="My App"
 ```
 
 `--with` is repeatable, asks for the union of all inputs, and is recorded in
-the answers file so `sc update` applies the same layers again.
+the answers file so `sc rederive` applies the same layers again.
 
 In a manifest, for a fixed combination:
 
@@ -394,7 +374,7 @@ changed. Commit the expected trees with the template.
 
 ```
 sc plan examples/rust-cli -v name="Hello World" --contents
-sc apply examples/monorepo ./shop -v name=Shop -v 'services=[{"name":"api","port":8080}]'
+sc fork examples/monorepo ./shop -v name=Shop -v 'services=[{"name":"api","port":8080}]'
 ```
 
 ## Releases and the commit convention

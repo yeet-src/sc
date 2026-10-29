@@ -15,9 +15,8 @@ pub struct Planner<'a> {
     pub dot_prefix: &'a str,
     /// Template-relative path (no trailing slash) -> output name.
     pub rename: &'a indexmap::IndexMap<String, String>,
-    /// Output paths that are variant groups: the working-tree entry there
-    /// (the checked-out symlink) is skipped; the store supplies the content.
-    pub variant_outputs: &'a [PathBuf],
+    /// Separator in `NAME<sep>VAR` variant group directories; "" disables.
+    pub variant_sep: &'a str,
     pub ctx: Value,
     pub exclude: Rules,
     pub raw: Rules,
@@ -45,7 +44,6 @@ impl Planner<'_> {
                 || src_rel == Path::new(CONTROL_DIR)
                 || src_rel == Path::new(".git")
                 || self.extra_control.contains(&src_rel)
-                || self.variant_outputs.contains(&src_rel)
             {
                 self.drop(src_rel, DropReason::Control);
                 continue;
@@ -56,6 +54,10 @@ impl Planner<'_> {
                 continue;
             }
             let ft = entry.file_type().map_err(io)?;
+            if let (true, Some((base, var))) = (ft.is_dir(), self.variant_group(&name.to_string_lossy())) {
+                self.variant(&src_rel, out_rel, &base, &var)?;
+                continue;
+            }
 
             let Some(out_name) = self.render_component(&src_rel, &name.to_string_lossy())? else {
                 self.drop(src_rel, DropReason::EmptyPath);
@@ -93,26 +95,28 @@ impl Planner<'_> {
         self.warnings.push(Warning { path: path.to_path_buf(), message: message.into() });
     }
 
-    /// Emit the candidate of variant group `key` (an output path) that
-    /// serves the value of input `var`, from `.sc/variants/<key>/`; nothing
-    /// when no candidate matches.
-    pub fn variant(&mut self, key: &str, var: &str) -> Result<(), PlanError> {
+    /// `NAME<sep>VAR` -> (NAME, VAR), for a directory name.
+    fn variant_group(&self, name: &str) -> Option<(String, String)> {
+        if self.variant_sep.is_empty() {
+            return None;
+        }
+        let (base, var) = name.rsplit_once(self.variant_sep)?;
+        (!base.is_empty() && !var.is_empty() && var.chars().all(|c| c == '_' || c.is_ascii_alphanumeric()))
+            .then(|| (base.to_string(), var.to_string()))
+    }
+
+    /// Emit the child of a variant group whose stem equals the value of
+    /// `var`, as `base` in `out_dir`; nothing when no child matches.
+    fn variant(&mut self, group_rel: &Path, out_dir: &Path, base: &str, var: &str) -> Result<(), PlanError> {
         let value = self.ctx.get_attr(var).unwrap_or_default();
         if value.is_undefined() {
-            return Err(PlanError::UnknownVariantInput { group: key.to_string(), var: var.to_string() });
+            return Err(PlanError::UnknownVariantInput { group: group_rel.display().to_string(), var: var.to_string() });
         }
         let value = crate::scaffolding::inputs::override_text(&value);
 
-        let store_rel = Path::new(CONTROL_DIR).join("variants").join(key);
-        let abs = self.root.join(&store_rel);
+        let abs = self.root.join(group_rel);
         let io = |source| PlanError::Io { path: abs.display().to_string(), source };
-        let mut children: Vec<_> = match std::fs::read_dir(&abs) {
-            Ok(rd) => rd.collect::<Result<_, _>>().map_err(io)?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(PlanError::NoVariantStore { group: key.to_string(), store: store_rel.display().to_string() });
-            }
-            Err(e) => return Err(io(e)),
-        };
+        let mut children: Vec<_> = std::fs::read_dir(&abs).map_err(io)?.collect::<Result<_, _>>().map_err(io)?;
         children.sort_by_key(|e| e.file_name());
         let stem = |e: &std::fs::DirEntry| {
             let name = e.file_name().to_string_lossy().into_owned();
@@ -120,14 +124,22 @@ impl Planner<'_> {
         };
         let Some(chosen) = children.iter().find(|e| stem(e) == value) else {
             let available = children.iter().map(stem).collect();
-            self.drop(PathBuf::from(key), DropReason::NoVariant { var: var.to_string(), value, available });
+            self.drop(group_rel.to_path_buf(), DropReason::NoVariant { var: var.to_string(), value, available });
             return Ok(());
         };
 
-        let out_rel = PathBuf::from(key);
-        let child_rel = store_rel.join(chosen.file_name());
+        let Some(out_name) = self.render_component(group_rel, base)? else {
+            self.drop(group_rel.to_path_buf(), DropReason::EmptyPath);
+            return Ok(());
+        };
+        let out_rel = out_dir.join(out_name);
+        let child_rel = group_rel.join(chosen.file_name());
         let ft = chosen.file_type().map_err(io)?;
-        let kind = if ft.is_dir() {
+        let kind = if ft.is_symlink() {
+            let target = std::fs::read_link(chosen.path()).map_err(io)?;
+            self.check_symlink(&out_rel, &target);
+            OpKind::Symlink { target }
+        } else if ft.is_dir() {
             self.walk(&child_rel, &out_rel)?;
             OpKind::CreateDir
         } else {
