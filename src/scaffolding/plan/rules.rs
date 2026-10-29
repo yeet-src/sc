@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use globset::{Glob, GlobSet, GlobSetBuilder};
 
-use crate::manifest::{CONTROL_DIR, Manifest, MergeRule, MergeSpec};
-use crate::render::{Renderer, ShellState};
+use crate::scaffolding::manifest::{CONTROL_DIR, Manifest, MergeRule, MergeSpec};
+use crate::scaffolding::render::{Renderer, ShellState};
 
 use super::PlanError;
 

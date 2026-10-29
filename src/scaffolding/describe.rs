@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Serialize;
 
-use crate::compose::Loaded;
-use crate::manifest::{CONTROL_DIR, MANIFEST_FILE, Manifest, MergeStrategy, VarKind};
+use crate::scaffolding::compose::Loaded;
+use crate::scaffolding::manifest::{CONTROL_DIR, MANIFEST_FILE, Manifest, MergeStrategy, VarKind};
 
 #[derive(Debug, Serialize)]
 pub struct Description {
@@ -45,7 +45,7 @@ pub struct MountSchema {
 
 #[derive(Debug, Serialize)]
 pub struct HookSchema {
-    pub phase: crate::manifest::Phase,
+    pub phase: crate::scaffolding::manifest::Phase,
     pub name: String,
     pub when: Option<String>,
 }
@@ -224,11 +224,11 @@ fn walk(root: &Path, rel: &Path, depth: usize, rules: &Rules, out: &mut Vec<Entr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose;
+    use crate::scaffolding::compose;
     use std::fs;
 
-    #[test]
-    fn describes_schema_and_tree() {
+    #[tokio::test]
+    async fn describes_schema_and_tree() {
         let dir = tempfile::tempdir().unwrap();
         for (rel, text) in [
             ("sc.toml", "[vars.name]\nprompt = \"Name\"\n[vars.ci]\ntype = \"bool\"\ndefault = true\n[files]\nexclude = [\"*.orig\"]\nraw = [\"assets/**\"]\n[[mounts]]\npath = \"svc\"\ntemplate = \"parts/svc\"\n"),
@@ -245,7 +245,7 @@ mod tests {
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(p, text).unwrap();
         }
-        let loaded = compose::load(&dir.path().display().to_string(), None, &Default::default()).unwrap();
+        let loaded = compose::load(&dir.path().display().to_string(), None, &Default::default()).await.unwrap();
         let d = describe(&loaded).unwrap();
 
         let names: Vec<_> = d.inputs.iter().map(|i| (i.name.as_str(), i.required)).collect();

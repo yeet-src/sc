@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use super::decide::Decision;
 use super::{ApplyError, Outcome};
-use crate::plan::{Content, Op, OpKind, Status};
+use crate::scaffolding::plan::{Content, Op, OpKind, Status};
 
 /// Everything staging has done, so it can be undone or committed.
 #[derive(Default)]

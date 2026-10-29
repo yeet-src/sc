@@ -14,11 +14,11 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::answers::{Answers, AnswersError};
-use crate::compose::{self, ComposeError, Loaded};
-use crate::inputs::{self, Inputs, Source};
-use crate::plan::{self, Content, OpKind, Plan, PlanOptions, Status};
-use crate::source::{self, GitInfo, SourceError};
+use crate::scaffolding::answers::{Answers, AnswersError};
+use crate::scaffolding::compose::{self, ComposeError, Loaded};
+use crate::scaffolding::inputs::{self, Inputs, Source};
+use crate::scaffolding::plan::{self, Content, OpKind, Plan, PlanOptions, Status};
+use crate::scaffolding::source::{self, GitInfo, SourceError};
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -57,7 +57,7 @@ pub enum UpdateError {
     },
 }
 
-pub fn prepare(dest: &Path, opts: &Options) -> Result<Prepared, UpdateError> {
+pub async fn prepare(dest: &Path, opts: &Options) -> Result<Prepared, UpdateError> {
     let answers = Answers::load(dest)?;
     let t = &answers.template;
     let src = match &t.commit {
@@ -68,7 +68,7 @@ pub fn prepare(dest: &Path, opts: &Options) -> Result<Prepared, UpdateError> {
         },
         None => source::Source::Local(PathBuf::from(&t.source)),
     };
-    let loaded = compose::load_resolved(src.resolve(&opts.fetch)?, &opts.fetch, 0)?;
+    let loaded = compose::load_resolved(src.resolve(&opts.fetch).await?, &opts.fetch, 0).await?;
     let manifest = loaded.combined_manifest();
 
     // Answers first, then explicit changes; later entries win in `resolve`.
@@ -88,6 +88,7 @@ pub fn prepare(dest: &Path, opts: &Options) -> Result<Prepared, UpdateError> {
     if let (Some(old), Some(new)) = (&previous, &loaded.git) {
         if *old != new.commit {
             let ancestor = render_previous(new, old, &inputs, opts)
+                .await
                 .map_err(|e| UpdateError::Previous { commit: old.clone(), source: Box::new(e) })?;
             reconcile(&mut plan, Some(&ancestor));
         } else {
@@ -101,10 +102,10 @@ pub fn prepare(dest: &Path, opts: &Options) -> Result<Prepared, UpdateError> {
 
 /// Render the previously used commit with the same inputs, from the mirror
 /// that `prepare` just synced.
-fn render_previous(new: &GitInfo, commit: &str, inputs: &Inputs, opts: &Options) -> Result<Plan, UpdateError> {
+async fn render_previous(new: &GitInfo, commit: &str, inputs: &Inputs, opts: &Options) -> Result<Plan, UpdateError> {
     let src = source::Source::Git { url: new.url.clone(), reference: Some(commit.to_string()), subdir: new.subdir.clone() };
     let fetch = source::Options { offline: true, ..opts.fetch.clone() };
-    let loaded = compose::load_resolved(src.resolve(&fetch)?, &fetch, 0)?;
+    let loaded = compose::load_resolved(src.resolve(&fetch).await?, &fetch, 0).await?;
     let plan_opts = PlanOptions { allow_shell: opts.allow_shell, ..Default::default() };
     Ok(loaded.plan(None, inputs.clone(), &plan_opts)?)
 }
@@ -169,7 +170,7 @@ fn reconcile(plan: &mut Plan, ancestor: Option<&Plan>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::apply::{self, Existing, Hooks};
+    use crate::scaffolding::apply::{self, Existing, Hooks};
     use std::fs;
     use std::process::Command;
 
@@ -216,22 +217,22 @@ mod tests {
         source::Options { offline: false, cache_dir: Some(cache.to_path_buf()) }
     }
 
-    fn apply_first(repo: &Repo, dest: &Path, cache: &Path) {
-        let loaded = compose::load(&repo.url(), None, &fetch(cache)).unwrap();
+    async fn apply_first(repo: &Repo, dest: &Path, cache: &Path) {
+        let loaded = compose::load(&repo.url(), None, &fetch(cache)).await.unwrap();
         let inputs = inputs::resolve(&loaded.combined_manifest(), &[("name".into(), "demo".into())]).unwrap();
         let plan = loaded.plan(Some(dest), inputs, &PlanOptions::default()).unwrap();
-        apply::apply(&plan, &apply::Options { existing: Existing::Fail, hooks: Hooks::Skip }, &mut |_| {}).unwrap();
+        apply::apply(&plan, &apply::Options { existing: Existing::Fail, hooks: Hooks::Skip }, &mut |_| {}).await.unwrap();
     }
 
     const V1_MAIN: &str = "fn main() {\n    // setup\n    println!(\"{{ name }}\");\n    // teardown\n}\n";
 
-    #[test]
-    fn three_way_merge_keeps_user_edits_and_takes_template_changes() {
+    #[tokio::test]
+    async fn three_way_merge_keeps_user_edits_and_takes_template_changes() {
         let repo = Repo::new();
         let v1 = repo.commit(&[("sc.toml", "[vars.name]\n"), ("src/main.rs", V1_MAIN), ("untouched.txt", "same\n"), ("mine.txt", "v1\n")], "v1");
         let cache = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
-        apply_first(&repo, dest.path(), cache.path());
+        apply_first(&repo, dest.path(), cache.path()).await;
         let answers = Answers::load(dest.path()).unwrap();
         assert_eq!(answers.template.commit.as_deref(), Some(v1.as_str()));
 
@@ -243,7 +244,7 @@ mod tests {
             "v2",
         );
 
-        let prepared = prepare(dest.path(), &Options { fetch: fetch(cache.path()), ..Default::default() }).unwrap();
+        let prepared = prepare(dest.path(), &Options { fetch: fetch(cache.path()), ..Default::default() }).await.unwrap();
         assert_eq!(prepared.previous.as_deref(), Some(v1.as_str()));
         assert_eq!(prepared.plan.template.git.as_ref().unwrap().commit, v2);
         let status = |p: &str| &prepared.plan.ops.iter().find(|o| o.path == Path::new(p)).unwrap().status;
@@ -258,51 +259,51 @@ mod tests {
         assert_eq!(*status("new.txt"), Status::Create);
         assert!(prepared.plan.inputs.0.iter().all(|i| i.source == Source::Answers));
 
-        let out = apply::apply(&prepared.plan, &apply::Options { existing: Existing::Fail, hooks: Hooks::Skip }, &mut |_| {}).unwrap();
+        let out = apply::apply(&prepared.plan, &apply::Options { existing: Existing::Fail, hooks: Hooks::Skip }, &mut |_| {}).await.unwrap();
         assert!(out.modified.iter().any(|p| p == Path::new("src/main.rs")));
         assert_eq!(fs::read_to_string(dest.path().join("mine.txt")).unwrap(), "edited by user\n");
         assert_eq!(Answers::load(dest.path()).unwrap().template.commit.as_deref(), Some(v2.as_str()));
 
         // A second update is a no-op.
-        let again = prepare(dest.path(), &Options { fetch: fetch(cache.path()), ..Default::default() }).unwrap();
+        let again = prepare(dest.path(), &Options { fetch: fetch(cache.path()), ..Default::default() }).await.unwrap();
         assert!(again.plan.ops.iter().all(|o| matches!(o.status, Status::Unchanged | Status::Kept { .. })), "{:?}", again.plan.ops.iter().map(|o| (&o.path, &o.status)).collect::<Vec<_>>());
     }
 
-    #[test]
-    fn overlapping_edits_conflict_and_need_overwrite() {
+    #[tokio::test]
+    async fn overlapping_edits_conflict_and_need_overwrite() {
         let repo = Repo::new();
         repo.commit(&[("sc.toml", "[vars.name]\n"), ("f.txt", "line\n")], "v1");
         let cache = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
-        apply_first(&repo, dest.path(), cache.path());
+        apply_first(&repo, dest.path(), cache.path()).await;
         fs::write(dest.path().join("f.txt"), "user line\n").unwrap();
         repo.commit(&[("f.txt", "template line\n")], "v2");
 
-        let prepared = prepare(dest.path(), &Options { fetch: fetch(cache.path()), ..Default::default() }).unwrap();
+        let prepared = prepare(dest.path(), &Options { fetch: fetch(cache.path()), ..Default::default() }).await.unwrap();
         let op = prepared.plan.ops.iter().find(|o| o.path == Path::new("f.txt")).unwrap();
         assert!(matches!(op.status, Status::Update { conflicts: true, .. }));
         let OpKind::WriteFile { content: Content::Text(t), .. } = &op.kind else { panic!() };
         assert!(t.contains("<<<<<<<") && t.contains("user line") && t.contains("template line"), "{t}");
 
-        let err = apply::apply(&prepared.plan, &apply::Options { existing: Existing::Fail, hooks: Hooks::Skip }, &mut |_| {}).unwrap_err();
+        let err = apply::apply(&prepared.plan, &apply::Options { existing: Existing::Fail, hooks: Hooks::Skip }, &mut |_| {}).await.unwrap_err();
         assert!(matches!(err, apply::ApplyError::Blocked(1)));
-        let out = apply::apply(&prepared.plan, &apply::Options { existing: Existing::Overwrite, hooks: Hooks::Skip }, &mut |_| {}).unwrap();
+        let out = apply::apply(&prepared.plan, &apply::Options { existing: Existing::Overwrite, hooks: Hooks::Skip }, &mut |_| {}).await.unwrap();
         assert!(out.modified.iter().any(|p| p == Path::new("f.txt")));
         assert!(fs::read_to_string(dest.path().join("f.txt")).unwrap().contains(">>>>>>>"));
     }
 
-    #[test]
-    fn ref_override_and_input_changes() {
+    #[tokio::test]
+    async fn ref_override_and_input_changes() {
         let repo = Repo::new();
         repo.commit(&[("sc.toml", "[vars.name]\n"), ("f.txt", "{{ name }}\n")], "v1");
         repo.git(&["tag", "v1"]);
         let cache = tempfile::tempdir().unwrap();
         let dest = tempfile::tempdir().unwrap();
-        apply_first(&repo, dest.path(), cache.path());
+        apply_first(&repo, dest.path(), cache.path()).await;
         repo.commit(&[("f.txt", "{{ name }}!\n")], "v2");
 
         let opts = Options { reference: Some("v1".into()), vars: vec![("name".into(), "renamed".into())], fetch: fetch(cache.path()), ..Default::default() };
-        let prepared = prepare(dest.path(), &opts).unwrap();
+        let prepared = prepare(dest.path(), &opts).await.unwrap();
         assert_eq!(prepared.plan.template.git.as_ref().unwrap().reference.as_deref(), Some("v1"));
         let op = prepared.plan.ops.iter().find(|o| o.path == Path::new("f.txt")).unwrap();
         let OpKind::WriteFile { content: Content::Text(t), .. } = &op.kind else { panic!() };

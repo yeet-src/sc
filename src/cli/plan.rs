@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use super::ui::{Show, print_plan};
 use super::{Result, Template, Vars};
-use crate::inputs;
-use crate::plan::PlanOptions;
+use crate::scaffolding::inputs;
+use crate::scaffolding::plan::PlanOptions;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -32,8 +32,8 @@ pub struct Args {
     allow_shell: bool,
 }
 
-pub fn run(a: Args) -> Result {
-    let loaded = a.template.load()?;
+pub async fn run(a: Args) -> Result {
+    let loaded = a.template.load().await?;
     let inputs = inputs::resolve(&loaded.combined_manifest(), &a.vars.vars)?;
     let plan = loaded.plan(a.dest.as_deref(), inputs, &PlanOptions { allow_shell: a.allow_shell, ..Default::default() })?;
     if a.json {

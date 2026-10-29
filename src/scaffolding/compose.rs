@@ -8,26 +8,31 @@
 //! template wins where paths collide.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
 
 use minijinja::Value;
 
-use crate::inputs::{self, InputError, Inputs};
-use crate::manifest::{CONTROL_DIR, Manifest, ManifestError, Mount};
-use crate::plan::{self, ANSWERS_FILE, MountInfo, Op, OpKind, Plan, PlanError, PlanOptions, Status};
-use crate::render::{RenderError, Renderer};
-use crate::source::{self, GitInfo, Resolved, Source, SourceError};
+use crate::scaffolding::inputs::{self, InputError, Inputs};
+use crate::scaffolding::manifest::{CONTROL_DIR, Manifest, ManifestError, Mount};
+use crate::scaffolding::plan::{self, ANSWERS_FILE, MountInfo, Op, OpKind, Plan, PlanError, PlanOptions, Status};
+use crate::scaffolding::render::{RenderError, Renderer};
+use crate::scaffolding::source::{self, GitInfo, Resolved, Source, SourceError};
 
 const MAX_DEPTH: usize = 8;
 
+/// A template with everything it refers to already fetched, so planning
+/// needs no network. Loading is async; planning is synchronous.
 #[derive(Debug)]
 pub struct Loaded {
     pub root: PathBuf,
     pub manifest: Manifest,
     pub git: Option<GitInfo>,
     pub bases: Vec<Loaded>,
+    /// One per `[[mounts]]` entry, in order.
+    pub mounted: Vec<Loaded>,
     pub depth: usize,
-    pub fetch: source::Options,
     #[allow(dead_code)] // keeps a git checkout alive
     resolved: Resolved,
 }
@@ -68,26 +73,48 @@ pub enum ComposeError {
     BadMountPath(String),
 }
 
-pub fn load(spec: &str, subdir: Option<PathBuf>, fetch: &source::Options) -> Result<Loaded, ComposeError> {
-    load_resolved(Source::parse(spec, subdir).resolve(fetch)?, fetch, 0)
+pub async fn load(spec: &str, subdir: Option<PathBuf>, fetch: &source::Options) -> Result<Loaded, ComposeError> {
+    load_resolved(Source::parse(spec, subdir).resolve(fetch).await?, fetch, 0).await
 }
 
-pub fn load_resolved(resolved: Resolved, fetch: &source::Options, depth: usize) -> Result<Loaded, ComposeError> {
-    if depth > MAX_DEPTH {
-        return Err(ComposeError::TooDeep);
-    }
-    let root = resolved.root.clone();
-    let manifest = Manifest::load(&root)?;
-    let mut bases = Vec::new();
-    for u in &manifest.uses {
-        let base = relative_to(&root, &u.source, u.subdir.clone())
-            .resolve(fetch)
-            .map_err(ComposeError::from)
-            .and_then(|r| load_resolved(r, fetch, depth + 1))
-            .map_err(|e| ComposeError::InBase { parent: root.clone(), source: Box::new(e) })?;
-        bases.push(base);
-    }
-    Ok(Loaded { root, manifest, git: resolved.git.clone(), bases, depth, fetch: fetch.clone(), resolved })
+pub fn load_resolved(
+    resolved: Resolved,
+    fetch: &source::Options,
+    depth: usize,
+) -> Pin<Box<dyn Future<Output = Result<Loaded, ComposeError>> + Send + '_>> {
+    Box::pin(async move {
+        if depth > MAX_DEPTH {
+            return Err(ComposeError::TooDeep);
+        }
+        let root = resolved.root.clone();
+        let manifest = Manifest::load(&root)?;
+        let mut bases = Vec::new();
+        for u in &manifest.uses {
+            let base = load_child(&root, &u.source, u.subdir.clone(), fetch, depth)
+                .await
+                .map_err(|e| ComposeError::InBase { parent: root.clone(), source: Box::new(e) })?;
+            bases.push(base);
+        }
+        let mut mounted = Vec::new();
+        for m in &manifest.mounts {
+            let sub = load_child(&root, &m.template, m.subdir.clone(), fetch, depth)
+                .await
+                .map_err(|e| ComposeError::InMount { path: m.path.clone(), source: Box::new(e) })?;
+            mounted.push(sub);
+        }
+        Ok(Loaded { root, manifest, git: resolved.git.clone(), bases, mounted, depth, resolved })
+    })
+}
+
+async fn load_child(
+    root: &Path,
+    spec: &str,
+    subdir: Option<PathBuf>,
+    fetch: &source::Options,
+    depth: usize,
+) -> Result<Loaded, ComposeError> {
+    let resolved = relative_to(root, spec, subdir).resolve(fetch).await?;
+    load_resolved(resolved, fetch, depth + 1).await
 }
 
 /// A relative local spec is relative to the template that names it.
@@ -158,8 +185,8 @@ impl Loaded {
 
         // Mounts go under this template's ops: the outer template wins.
         let mut mount_hooks = Vec::new();
-        for m in &self.manifest.mounts {
-            self.expand_mount(m, dest, &inputs, opts, &mut ops, &mut top, &mut mount_hooks)
+        for (m, sub) in self.manifest.mounts.iter().zip(&self.mounted) {
+            self.expand_mount(m, sub, dest, &inputs, opts, &mut ops, &mut top, &mut mount_hooks)
                 .map_err(|e| ComposeError::InMount { path: m.path.clone(), source: Box::new(e) })?;
         }
 
@@ -179,6 +206,7 @@ impl Loaded {
     fn expand_mount(
         &self,
         m: &Mount,
+        sub: &Loaded,
         dest: Option<&Path>,
         inputs: &Inputs,
         opts: &PlanOptions,
@@ -197,7 +225,6 @@ impl Loaded {
             }
         };
         let renderer = Renderer::new(&self.root.join(CONTROL_DIR));
-        let sub = load_resolved(relative_to(&self.root, &m.template, m.subdir.clone()).resolve(&self.fetch)?, &self.fetch, self.depth + 1)?;
         let sub_manifest = sub.combined_manifest();
 
         for (index, item) in elements.into_iter().enumerate() {
@@ -277,7 +304,7 @@ fn dir_status(dest: Option<&Path>, rel: &Path) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{Content, OpKind};
+    use crate::scaffolding::plan::{Content, OpKind};
     use std::fs;
 
     fn fixture(root: &Path, files: &[(&str, &str)]) {
@@ -288,8 +315,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn layers_override_by_path_and_share_vars() {
+    #[tokio::test]
+    async fn layers_override_by_path_and_share_vars() {
         let dir = tempfile::tempdir().unwrap();
         fixture(
             dir.path(),
@@ -303,11 +330,11 @@ mod tests {
                 ("child/src/main.rs", "fn main() {}\n"),
             ],
         );
-        let loaded = load(&dir.path().join("child").display().to_string(), None, &source::Options::default()).unwrap();
+        let loaded = load(&dir.path().join("child").display().to_string(), None, &source::Options::default()).await.unwrap();
         assert_eq!(loaded.bases.len(), 1);
         let manifest = loaded.combined_manifest();
         assert_eq!(manifest.vars.keys().collect::<Vec<_>>(), ["license", "name"]);
-        let inputs = crate::inputs::resolve(&manifest, &[("name".into(), "app".into())]).unwrap();
+        let inputs = crate::scaffolding::inputs::resolve(&manifest, &[("name".into(), "app".into())]).unwrap();
         let plan = loaded.plan(None, inputs, &PlanOptions::default()).unwrap();
 
         let paths: Vec<_> = plan.ops.iter().map(|o| o.path.display().to_string()).collect();
@@ -322,8 +349,8 @@ mod tests {
         assert_eq!(plan.hooks.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["echo base", "echo child"]);
     }
 
-    #[test]
-    fn mounts_expand_per_item_and_outer_template_wins() {
+    #[tokio::test]
+    async fn mounts_expand_per_item_and_outer_template_wins() {
         let dir = tempfile::tempdir().unwrap();
         fixture(
             dir.path(),
@@ -341,8 +368,8 @@ mod tests {
                 ("mono/parts/infra/main.tf", "tf\n"),
             ],
         );
-        let loaded = load(&dir.path().join("mono").display().to_string(), None, &source::Options::default()).unwrap();
-        let inputs = crate::inputs::resolve(&loaded.combined_manifest(), &[("org".into(), "acme".into())]).unwrap();
+        let loaded = load(&dir.path().join("mono").display().to_string(), None, &source::Options::default()).await.unwrap();
+        let inputs = crate::scaffolding::inputs::resolve(&loaded.combined_manifest(), &[("org".into(), "acme".into())]).unwrap();
         let plan = loaded.plan(None, inputs, &PlanOptions::default()).unwrap();
 
         let paths: Vec<_> = plan.ops.iter().map(|o| o.path.display().to_string()).collect();
@@ -372,11 +399,11 @@ mod tests {
         assert!(text(".sc.toml").contains("[[inputs.services]]"), "list inputs land in the answers file");
     }
 
-    #[test]
-    fn cycles_are_reported() {
+    #[tokio::test]
+    async fn cycles_are_reported() {
         let dir = tempfile::tempdir().unwrap();
         fixture(dir.path(), &[("a/sc.toml", "[[uses]]\nsource = \"../b\"\n"), ("b/sc.toml", "[[uses]]\nsource = \"../a\"\n")]);
-        let err = load(&dir.path().join("a").display().to_string(), None, &source::Options::default()).unwrap_err();
+        let err = load(&dir.path().join("a").display().to_string(), None, &source::Options::default()).await.unwrap_err();
         assert!(err.to_string().contains("cycle"), "{err}");
     }
 }

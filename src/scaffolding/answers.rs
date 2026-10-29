@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::plan::ANSWERS_FILE;
+use crate::scaffolding::plan::ANSWERS_FILE;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Answers {
@@ -65,6 +65,6 @@ impl Answers {
     /// Inputs as `--var`-style overrides, so they resolve through the same
     /// typed path as command-line values.
     pub fn overrides(&self) -> Vec<(String, String)> {
-        self.inputs.iter().map(|(k, v)| (k.clone(), crate::inputs::override_text(v))).collect()
+        self.inputs.iter().map(|(k, v)| (k.clone(), crate::scaffolding::inputs::override_text(v))).collect()
     }
 }

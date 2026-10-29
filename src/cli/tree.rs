@@ -1,8 +1,8 @@
 use colored::Colorize;
 
 use super::{Result, Template};
-use crate::describe::{self, EntryKind, Tag};
-use crate::manifest::{Phase, VarKind};
+use crate::scaffolding::describe::{self, EntryKind, Tag};
+use crate::scaffolding::manifest::{Phase, VarKind};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -16,8 +16,8 @@ pub struct Args {
     all: bool,
 }
 
-pub fn run(a: Args) -> Result {
-    let loaded = a.template.load()?;
+pub async fn run(a: Args) -> Result {
+    let loaded = a.template.load().await?;
     let d = describe::describe(&loaded)?;
     if a.json {
         serde_json::to_writer_pretty(std::io::stdout().lock(), &d)?;
@@ -47,7 +47,7 @@ pub fn run(a: Args) -> Result {
             VarKind::List => "list",
         };
         let value = match &i.default {
-            Some(v) => format!("= {}", crate::inputs::override_text(v)).green(),
+            Some(v) => format!("= {}", crate::scaffolding::inputs::override_text(v)).green(),
             None => "required".red().bold(),
         };
         let mut notes = Vec::new();

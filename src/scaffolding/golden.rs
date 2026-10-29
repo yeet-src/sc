@@ -5,10 +5,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::compose::{ComposeError, Loaded};
-use crate::inputs::{self, InputError};
-use crate::manifest::CONTROL_DIR;
-use crate::plan::{ANSWERS_FILE, OpKind, PlanOptions};
+use crate::scaffolding::compose::{ComposeError, Loaded};
+use crate::scaffolding::inputs::{self, InputError};
+use crate::scaffolding::manifest::CONTROL_DIR;
+use crate::scaffolding::plan::{ANSWERS_FILE, OpKind, PlanOptions};
 
 #[derive(Debug)]
 pub struct CaseResult {
@@ -166,7 +166,7 @@ fn read_tree(dir: &Path) -> Result<Tree, TestError> {
                 } else {
                     std::fs::read(&path).map_err(io)?
                 };
-                let exec = !ft.is_symlink() && crate::plan::file_mode(&path).map_err(io)? & 0o111 != 0;
+                let exec = !ft.is_symlink() && crate::scaffolding::plan::file_mode(&path).map_err(io)? & 0o111 != 0;
                 tree.insert(rel, (bytes, exec));
             }
         }
@@ -207,11 +207,11 @@ impl CaseResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose;
+    use crate::scaffolding::compose;
     use std::fs;
 
-    #[test]
-    fn golden_round_trip() {
+    #[tokio::test]
+    async fn golden_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         for (rel, text) in [
             ("sc.toml", "[vars.name]\n[vars.ci]\ntype = \"bool\"\ndefault = false\n"),
@@ -224,7 +224,7 @@ mod tests {
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(p, text).unwrap();
         }
-        let loaded = compose::load(&dir.path().display().to_string(), None, &Default::default()).unwrap();
+        let loaded = compose::load(&dir.path().display().to_string(), None, &Default::default()).await.unwrap();
 
         // Nothing expected yet: everything is extra.
         let results = run(&loaded, None, false).unwrap();

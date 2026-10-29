@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use super::ui::{Show, confirm, print_outcome, print_plan};
 use super::{Result, Template, Vars, aborted, announce_hook};
-use crate::apply::{self, Existing, Hooks};
-use crate::inputs;
-use crate::plan::PlanOptions;
+use crate::scaffolding::apply::{self, Existing, Hooks};
+use crate::scaffolding::inputs;
+use crate::scaffolding::plan::PlanOptions;
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -35,8 +35,8 @@ pub struct Args {
     no_hooks: bool,
 }
 
-pub fn run(a: Args) -> Result {
-    let loaded = a.template.load()?;
+pub async fn run(a: Args) -> Result {
+    let loaded = a.template.load().await?;
     let inputs = inputs::resolve(&loaded.combined_manifest(), &a.vars.vars)?;
     let plan = loaded.plan(Some(&a.dest), inputs, &PlanOptions { allow_shell: a.allow_shell, ..Default::default() })?;
     if !a.json {
@@ -51,12 +51,12 @@ pub fn run(a: Args) -> Result {
         (false, true) => Hooks::Capture,
         (false, false) => Hooks::Run,
     };
-    let mut announce = |h: &crate::plan::PlannedHook| {
+    let mut announce = |h: &crate::scaffolding::plan::PlannedHook| {
         if !a.json {
             announce_hook(h);
         }
     };
-    let outcome = apply::apply(&plan, &apply::Options { existing: a.existing, hooks }, &mut announce)?;
+    let outcome = apply::apply(&plan, &apply::Options { existing: a.existing, hooks }, &mut announce).await?;
     if a.json {
         serde_json::to_writer_pretty(std::io::stdout().lock(), &outcome)?;
         println!();

@@ -8,10 +8,10 @@ use std::path::Path;
 
 use colored::{ColoredString, Colorize};
 
-use crate::apply;
-use crate::inputs;
-use crate::manifest::Phase;
-use crate::plan::{Content, DropReason, Exec, OpKind, Origin, Plan, Status};
+use crate::scaffolding::apply;
+use crate::scaffolding::inputs;
+use crate::scaffolding::manifest::Phase;
+use crate::scaffolding::plan::{Content, DropReason, Exec, OpKind, Origin, Plan, Status};
 
 /// Ask on the terminal; without one, require `--yes` so CI never hangs.
 pub fn confirm() -> Result<bool, Box<dyn std::error::Error>> {

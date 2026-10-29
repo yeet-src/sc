@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use minijinja::Value;
 use serde::Serialize;
 
-use crate::manifest::{Manifest, VarKind, VarSpec};
+use crate::scaffolding::manifest::{Manifest, VarKind, VarSpec};
 
 #[derive(Debug, thiserror::Error)]
 pub enum InputError {

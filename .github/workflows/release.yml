@@ -1,0 +1,198 @@
+name: release
+
+# Publish a versioned GitHub release with static binaries, but ONLY when a
+# push to master (or a release/* maintenance line) contains a commit that asks
+# for it. Unmarked pushes build nothing and publish nothing.
+#
+# Versions are semver vMAJOR.MINOR.PATCH. A commit asks for a release with a
+# [bump:*] marker in its SUBJECT (validated before merge by
+# commit-convention.yml); the bump is the HIGHEST level any commit since the
+# last release asks for:
+#   * [bump:major]   -> major  (X+1.0.0)
+#   * [bump:minor]   -> minor  (X.Y+1.0)
+#   * [bump:patch]   -> patch  (X.Y.Z+1)
+# With no tag yet the base is 0.0.0, so the first marked commit decides the
+# first version. The newest mainline release is marked "Latest" so
+# .../releases/latest/download/<asset> tracks it.
+#
+# The version in Cargo.toml is a placeholder; the computed one is written in
+# before building so `sc --version` reports the release, and is never
+# committed back. The tag points at the pushed commit.
+
+on:
+  push:
+    branches:
+      - master
+      - 'release/*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Per-ref: a release/* back-patch never queues behind a master build.
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    # Don't publish on branch creation (e.g. opening a release/* line at an
+    # existing release commit) — there are no new commits to release.
+    if: ${{ github.event_name != 'push' || !github.event.created }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      skip: ${{ steps.version.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Compute next version
+        id: version
+        run: |
+          set -euo pipefail
+          # Select the baseline by tag NAME: a release/vX.Y branch sees only its
+          # X.Y line, master (or any other ref) sees all clean tags globally.
+          case "${GITHUB_REF_NAME:-}" in
+            release/v*) mm="$(printf '%s' "${GITHUB_REF_NAME#release/v}" | cut -d. -f1,2 | sed 's/[.]/\\./g')"
+                        tagpat="^v${mm}(\.[0-9]+)?$" ;;
+            *)          tagpat='^v[0-9]+\.[0-9]+(\.[0-9]+)?$' ;;
+          esac
+          # `|| true` so an empty tag set doesn't fail under pipefail.
+          latest="$(git tag -l 'v[0-9]*' | { grep -E "$tagpat" || true; } | sed 's/^v//' | sort -V | tail -1)"
+          if [ -z "$latest" ]; then
+            base="0.0.0"
+            commits="$(git rev-list HEAD)"
+          else
+            base="$latest"
+            commits="$(git rev-list "v${latest}..HEAD")"
+          fi
+          rank=0   # highest level asked for: 1=patch 2=minor 3=major
+          while IFS= read -r sha; do
+            [ -n "$sha" ] || continue
+            msg="$(git log -1 --format=%s "$sha")"   # subject line only
+            if   printf '%s' "$msg" | grep -qi '\[bump:major\]'; then lvl=3
+            elif printf '%s' "$msg" | grep -qi '\[bump:minor\]'; then lvl=2
+            elif printf '%s' "$msg" | grep -qi '\[bump:patch\]'; then lvl=1
+            else lvl=0; fi
+            [ "$lvl" -gt "$rank" ] && rank=$lvl
+          done <<< "$commits"
+          if [ "$rank" -eq 0 ]; then
+            echo "no [bump:*] marker since v${base} — nothing to release"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          maj=$(echo "$base" | awk -F. '{print $1+0}')
+          min=$(echo "$base" | awk -F. '{print $2+0}')
+          pat=$(echo "$base" | awk -F. '{print $3+0}')   # missing patch -> 0
+          case "$rank" in
+            3) next="$((maj + 1)).0.0" ;;
+            2) next="${maj}.$((min + 1)).0" ;;
+            1) next="${maj}.${min}.$((pat + 1))" ;;
+          esac
+          echo "tag=v${next}" >> "$GITHUB_OUTPUT"
+          echo "Next version: v${next}"
+
+  build:
+    name: ${{ matrix.target }}
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04
+            cross: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: contains(matrix.target, 'musl') && !matrix.cross
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@cross
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Stamp version
+        shell: bash
+        run: |
+          set -euo pipefail
+          v="${{ needs.version.outputs.tag }}"; v="${v#v}"
+          sed -i.bak -E "s/^version = \"[^\"]*\"/version = \"${v}\"/" Cargo.toml && rm Cargo.toml.bak
+          grep -m1 '^version' Cargo.toml
+
+      - name: Test
+        # Cross-compiled targets cannot run on the host; the native jobs cover the suite.
+        if: matrix.target != 'x86_64-apple-darwin' && !matrix.cross
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Build
+        run: ${{ matrix.cross && 'cross' || 'cargo' }} build --release --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="sc-${{ needs.version.outputs.tag }}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          cp "target/${{ matrix.target }}/release/sc" README.md "dist/${name}/"
+          tar -C dist -czf "dist/${name}.tar.gz" "${name}"
+          (cd dist && shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish ${{ needs.version.outputs.tag }}
+    needs: [version, build]
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Combined checksums
+        run: cat dist/*.sha256 > dist/SHA256SUMS && cat dist/SHA256SUMS
+
+      - name: Publish versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Mark the newest MAINLINE version as GitHub "Latest" so the stable
+          # .../releases/latest/download/<asset> URL tracks it. A release/*
+          # back-port must NOT steal Latest from a newer mainline release.
+          if [ "${GITHUB_REF_NAME}" = master ]; then mk=--latest; else mk='--latest=false'; fi
+          gh release create "${{ needs.version.outputs.tag }}" \
+            dist/*.tar.gz dist/SHA256SUMS \
+            --title "${{ needs.version.outputs.tag }}" \
+            --generate-notes \
+            --target "${GITHUB_SHA}" \
+            "$mk"

@@ -2,7 +2,7 @@ use colored::Colorize;
 
 use super::ui::print_diff;
 use super::{Result, Template};
-use crate::golden::{self, Finding};
+use crate::scaffolding::golden::{self, Finding};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -15,8 +15,8 @@ pub struct Args {
     update: bool,
 }
 
-pub fn run(a: Args) -> Result {
-    let loaded = a.template.load()?;
+pub async fn run(a: Args) -> Result {
+    let loaded = a.template.load().await?;
     let results = golden::run(&loaded, a.case.as_deref(), a.update)?;
     let mut failed = 0;
     for r in &results {

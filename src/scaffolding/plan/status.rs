@@ -38,7 +38,7 @@ pub fn status(dest: &Path, op: &mut Op, keep: &Rules, merge: &MergeRules) -> Res
         };
         let existing = std::fs::read(&abs).map_err(io)?;
         let existing_text = std::str::from_utf8(&existing).map_err(|_| unmergeable("not valid UTF-8"))?;
-        let merged = crate::merge::merge(spec, existing_text, rendered)
+        let merged = crate::scaffolding::merge::merge(spec, existing_text, rendered)
             .map_err(|source| PlanError::Merge { path: path.clone(), strategy, source })?;
         if merged.as_bytes() == existing {
             return Ok(Status::Unchanged);

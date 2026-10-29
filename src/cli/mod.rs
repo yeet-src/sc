@@ -26,7 +26,7 @@ const STYLES: Styles = Styles::styled()
     .invalid(AnsiColor::Red.on_default())
     .error(AnsiColor::Red.on_default().effects(Effects::BOLD));
 
-use crate::{compose, inputs, source};
+use crate::scaffolding::{compose, inputs, source};
 
 pub type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -70,8 +70,8 @@ pub struct Template {
 }
 
 impl Template {
-    fn load(&self) -> std::result::Result<compose::Loaded, compose::ComposeError> {
-        compose::load(&self.template, self.subdir.clone(), &source::Options { offline: self.offline, cache_dir: None })
+    async fn load(&self) -> std::result::Result<compose::Loaded, compose::ComposeError> {
+        compose::load(&self.template, self.subdir.clone(), &source::Options { offline: self.offline, cache_dir: None }).await
     }
 }
 
@@ -83,14 +83,15 @@ pub struct Vars {
     vars: Vec<(String, String)>,
 }
 
-pub fn main() -> ExitCode {
+#[tokio::main]
+pub async fn main() -> ExitCode {
     let result = match Cli::parse().cmd {
-        Cmd::Plan(a) => plan::run(a),
-        Cmd::Apply(a) => apply::run(a),
-        Cmd::Update(a) => update::run(a),
-        Cmd::Test(a) => test::run(a),
-        Cmd::New(a) => new::run(a),
-        Cmd::Tree(a) => tree::run(a),
+        Cmd::Plan(a) => plan::run(a).await,
+        Cmd::Apply(a) => apply::run(a).await,
+        Cmd::Update(a) => update::run(a).await,
+        Cmd::Test(a) => test::run(a).await,
+        Cmd::New(a) => new::run(a).await,
+        Cmd::Tree(a) => tree::run(a).await,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -106,7 +107,7 @@ pub fn main() -> ExitCode {
     }
 }
 
-fn announce_hook(h: &crate::plan::PlannedHook) {
+fn announce_hook(h: &crate::scaffolding::plan::PlannedHook) {
     println!("\n{} {}", "running after hook:".cyan().bold(), h.name.green());
 }
 

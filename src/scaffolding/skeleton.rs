@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::manifest::{CONTROL_DIR, MANIFEST_FILE};
+use crate::scaffolding::manifest::{CONTROL_DIR, MANIFEST_FILE};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NewError {
@@ -106,17 +106,17 @@ pub fn create(dir: &Path, name: &str) -> Result<Vec<PathBuf>, NewError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{compose, golden};
+    use crate::scaffolding::{compose, golden};
 
-    #[test]
-    fn skeleton_plans_and_passes_its_own_golden_test() {
+    #[tokio::test]
+    async fn skeleton_plans_and_passes_its_own_golden_test() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("tpl");
         let written = create(&dir, "demo").unwrap();
         assert_eq!(written.len(), 6);
         assert!(matches!(create(&dir, "demo"), Err(NewError::NotEmpty(_))));
 
-        let loaded = compose::load(&dir.display().to_string(), None, &Default::default()).unwrap();
+        let loaded = compose::load(&dir.display().to_string(), None, &Default::default()).await.unwrap();
         assert_eq!(loaded.manifest.template.name.as_deref(), Some("demo"));
         golden::run(&loaded, None, true).unwrap();
         let results = golden::run(&loaded, None, false).unwrap();

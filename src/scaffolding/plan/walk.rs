@@ -6,7 +6,7 @@ use minijinja::Value;
 
 use super::rules::{Renderers, Rules};
 use super::{Content, DropReason, Dropped, Op, OpKind, Origin, PlanError, Status, Warning};
-use crate::manifest::{CONTROL_DIR, MANIFEST_FILE};
+use crate::scaffolding::manifest::{CONTROL_DIR, MANIFEST_FILE};
 
 pub struct Planner<'a> {
     pub root: &'a Path,
@@ -36,6 +36,7 @@ impl Planner<'_> {
             let src_rel = src_rel.join(&name);
             if src_rel == Path::new(MANIFEST_FILE)
                 || src_rel == Path::new(CONTROL_DIR)
+                || src_rel == Path::new(".git")
                 || self.extra_control.contains(&src_rel)
             {
                 self.drop(src_rel, DropReason::Control);

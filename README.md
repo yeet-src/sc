@@ -13,6 +13,10 @@ what each file will do: create, modify, merge, keep, or conflict.
 
 ## Install
 
+Download a static binary for macOS or Linux (x86_64 or arm64) from the
+[latest release](https://github.com/yeet-src/sc/releases/latest), or build
+from source:
+
 ```
 cargo install --git https://github.com/yeet-src/sc
 ```
@@ -257,3 +261,21 @@ changed. Commit the expected trees with the template.
 sc plan examples/rust-cli -v name="Hello World" --contents
 sc apply examples/monorepo ./shop -v name=Shop -v 'services=[{"name":"api","port":8080}]'
 ```
+
+## Releases and the commit convention
+
+A push to `master` publishes a release with binaries for all four targets
+only when it contains a commit whose subject line carries a marker. Pushes
+without one publish nothing.
+
+| Marker | Bump |
+| --- | --- |
+| `[bump:patch]` | X.Y.Z+1 |
+| `[bump:minor]` | X.Y+1.0 |
+| `[bump:major]` | X+1.0.0 |
+
+The highest level among the commits since the previous release wins, and the
+first release counts up from 0.0.0. Releases from a `release/vX.Y`
+maintenance branch never become "Latest". A pull-request check rejects
+misspelled markers. `Cargo.toml` carries a placeholder version; the computed
+one is stamped in at build time.

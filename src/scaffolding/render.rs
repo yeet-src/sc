@@ -8,8 +8,8 @@ use heck::{ToKebabCase, ToLowerCamelCase, ToPascalCase, ToShoutySnakeCase, ToSna
 use minijinja::syntax::SyntaxConfig;
 use minijinja::{Environment, UndefinedBehavior, Value};
 
-use crate::manifest::Syntax;
-use crate::shell;
+use crate::scaffolding::manifest::Syntax;
+use crate::scaffolding::shell;
 
 /// Shared by every renderer of one plan: whether `shell()` may run, where,
 /// and a log of what it ran so the plan can show it.
@@ -66,7 +66,7 @@ impl Renderer {
                 if !st.allowed {
                     return Err(Error::new(ErrorKind::InvalidOperation, "shell() requires --allow-shell"));
                 }
-                let out = shell::capture(shell::Program::Inline { text: &cmd, shell: "sh" }, &cmd, &st.ctx)
+                let out = shell::capture_blocking(shell::Program::Inline { text: &cmd, shell: "sh" }, &cmd, &st.ctx)
                     .map_err(|e| Error::new(ErrorKind::InvalidOperation, e.to_string()))?;
                 st.log.lock().unwrap().push(cmd);
                 Ok(out.strip_suffix('\n').unwrap_or(&out).to_string())

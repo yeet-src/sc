@@ -2,7 +2,7 @@
 //! text. Nothing here touches the filesystem, so each strategy is testable in
 //! isolation and the planner can show the result as a diff before apply.
 
-use crate::manifest::{MergeSpec, MergeStrategy};
+use crate::scaffolding::manifest::{MergeSpec, MergeStrategy};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MergeError {

@@ -1,11 +1,15 @@
 //! Running template-provided commands: hooks, `generate` rules and the
 //! `shell()` template function. One runner so cwd, environment and error
 //! reporting are the same everywhere.
+//!
+//! The async functions are the normal entry points. The blocking variant
+//! exists for the `shell()` template function, which runs inside the
+//! synchronous renderer.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::inputs::Inputs;
+use crate::scaffolding::inputs::Inputs;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ShellError {
@@ -55,7 +59,19 @@ pub enum Program<'a> {
 }
 
 /// Run and capture stdout. Non-zero exit is an error carrying stderr.
-pub fn capture(program: Program, label: &str, ctx: &Context) -> Result<String, ShellError> {
+pub async fn capture(program: Program<'_>, label: &str, ctx: &Context) -> Result<String, ShellError> {
+    let (mut cmd, _tmp) = command(program, ctx)?;
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let out = tokio::process::Command::from(cmd)
+        .output()
+        .await
+        .map_err(|source| ShellError::Spawn { command: label.to_string(), source })?;
+    check(label, &out)
+}
+
+/// Blocking form of [`capture`], for use from synchronous code such as the
+/// template renderer. Never call it on an async runtime thread.
+pub fn capture_blocking(program: Program<'_>, label: &str, ctx: &Context) -> Result<String, ShellError> {
     let (mut cmd, _tmp) = command(program, ctx)?;
     let out = cmd
         .stdin(Stdio::null())
@@ -63,6 +79,10 @@ pub fn capture(program: Program, label: &str, ctx: &Context) -> Result<String, S
         .stderr(Stdio::piped())
         .output()
         .map_err(|source| ShellError::Spawn { command: label.to_string(), source })?;
+    check(label, &out)
+}
+
+fn check(label: &str, out: &std::process::Output) -> Result<String, ShellError> {
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let stderr = if stderr.trim().is_empty() { String::new() } else { format!(":\n{}", stderr.trim_end()) };
@@ -72,9 +92,12 @@ pub fn capture(program: Program, label: &str, ctx: &Context) -> Result<String, S
 }
 
 /// Run with inherited stdio so the user sees the output live.
-pub fn interactive(program: Program, label: &str, ctx: &Context) -> Result<(), ShellError> {
-    let (mut cmd, _tmp) = command(program, ctx)?;
-    let status = cmd.status().map_err(|source| ShellError::Spawn { command: label.to_string(), source })?;
+pub async fn interactive(program: Program<'_>, label: &str, ctx: &Context) -> Result<(), ShellError> {
+    let (cmd, _tmp) = command(program, ctx)?;
+    let status = tokio::process::Command::from(cmd)
+        .status()
+        .await
+        .map_err(|source| ShellError::Spawn { command: label.to_string(), source })?;
     if !status.success() {
         return Err(ShellError::Failed { command: label.to_string(), status: status.to_string(), stderr: String::new() });
     }
@@ -117,21 +140,23 @@ mod tests {
         Context { cwd: std::env::temp_dir(), env: vec![("SC_VAR_X".into(), "hi".into())] }
     }
 
-    #[test]
-    fn captures_stdout_and_env() {
-        let out = capture(Program::Inline { text: "echo \"$SC_VAR_X\"\npwd", shell: "sh" }, "t", &ctx()).unwrap();
+    #[tokio::test]
+    async fn captures_stdout_and_env() {
+        let out = capture(Program::Inline { text: "echo \"$SC_VAR_X\"\npwd", shell: "sh" }, "t", &ctx()).await.unwrap();
         assert!(out.starts_with("hi\n"), "{out}");
+        let out = capture_blocking(Program::Inline { text: "echo \"$SC_VAR_X\"", shell: "sh" }, "t", &ctx()).unwrap();
+        assert_eq!(out, "hi\n");
     }
 
-    #[test]
-    fn script_runs_via_shebang() {
-        let out = capture(Program::Script { text: "#!/bin/sh\necho from-script\n" }, "t", &ctx()).unwrap();
+    #[tokio::test]
+    async fn script_runs_via_shebang() {
+        let out = capture(Program::Script { text: "#!/bin/sh\necho from-script\n" }, "t", &ctx()).await.unwrap();
         assert_eq!(out, "from-script\n");
     }
 
-    #[test]
-    fn failure_carries_stderr() {
-        let err = capture(Program::Inline { text: "echo boom >&2; exit 3", shell: "sh" }, "t", &ctx()).unwrap_err();
+    #[tokio::test]
+    async fn failure_carries_stderr() {
+        let err = capture(Program::Inline { text: "echo boom >&2; exit 3", shell: "sh" }, "t", &ctx()).await.unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("exit status: 3") && msg.contains("boom"), "{msg}");
     }

@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use minijinja::Value;
 
 use super::{Exec, PlanError, PlannedHook};
-use crate::inputs::Inputs;
-use crate::manifest::{CONTROL_DIR, Hook};
-use crate::render::Renderer;
-use crate::shell::Program;
+use crate::scaffolding::inputs::Inputs;
+use crate::scaffolding::manifest::{CONTROL_DIR, Hook};
+use crate::scaffolding::render::Renderer;
+use crate::scaffolding::shell::Program;
 
 pub fn hook_name(h: &Hook) -> String {
     if let Some(n) = &h.name {

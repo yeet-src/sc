@@ -1,14 +1,14 @@
 //! Where templates come from: a local directory, or a git repository fetched
 //! into a cache and checked out at a ref.
 //!
-//! Git access goes through the `git` binary. A bare mirror of each
+//! Git access goes through the `git` binary, run asynchronously. A bare mirror of each
 //! repository lives in the cache; each run extracts the requested commit
 //! into a temporary directory with `git archive`, so the cache is never
 //! mutated by a template and any ref, including a bare commit, works.
 
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use tokio::process::Command;
 
 use serde::{Deserialize, Serialize};
 
@@ -80,7 +80,7 @@ impl Source {
         Source::Git { url, reference, subdir }
     }
 
-    pub fn resolve(&self, opts: &Options) -> Result<Resolved, SourceError> {
+    pub async fn resolve(&self, opts: &Options) -> Result<Resolved, SourceError> {
         match self {
             Source::Local(path) => {
                 if !path.is_dir() {
@@ -90,10 +90,10 @@ impl Source {
             }
             Source::Git { url, reference, subdir } => {
                 let mirror = cache_dir(opts)?.join(cache_name(url));
-                sync_mirror(url, &mirror, opts.offline)?;
-                let commit = rev_parse(&mirror, reference.as_deref().unwrap_or("HEAD"))?;
+                sync_mirror(url, &mirror, opts.offline).await?;
+                let commit = rev_parse(&mirror, reference.as_deref().unwrap_or("HEAD")).await?;
                 let checkout = tempfile::Builder::new().prefix("sc-template-").tempdir()?;
-                archive(&mirror, &commit, checkout.path())?;
+                archive(&mirror, &commit, checkout.path()).await?;
                 let root = match subdir {
                     Some(s) => checkout.path().join(s),
                     None => checkout.path().to_path_buf(),
@@ -146,22 +146,23 @@ fn cache_name(url: &str) -> String {
     format!("{stem}-{:016x}", h.finish())
 }
 
-fn sync_mirror(url: &str, mirror: &Path, offline: bool) -> Result<(), SourceError> {
+async fn sync_mirror(url: &str, mirror: &Path, offline: bool) -> Result<(), SourceError> {
     if mirror.join("HEAD").exists() {
         if !offline {
-            git(None, &["-C", &mirror.display().to_string(), "remote", "update", "--prune"])?;
+            git(None, &["-C", &mirror.display().to_string(), "remote", "update", "--prune"]).await?;
         }
         return Ok(());
     }
     if offline {
         return Err(SourceError::Offline { url: url.to_string() });
     }
-    git(None, &["clone", "--quiet", "--mirror", url, &mirror.display().to_string()])?;
+    git(None, &["clone", "--quiet", "--mirror", url, &mirror.display().to_string()]).await?;
     Ok(())
 }
 
-fn rev_parse(mirror: &Path, reference: &str) -> Result<String, SourceError> {
+async fn rev_parse(mirror: &Path, reference: &str) -> Result<String, SourceError> {
     let out = git(Some(mirror), &["rev-parse", "--verify", "--quiet", &format!("{reference}^{{commit}}")])
+        .await
         .map_err(|e| match e {
             SourceError::Git { args, detail } if detail.is_empty() => SourceError::Git {
                 args,
@@ -172,18 +173,16 @@ fn rev_parse(mirror: &Path, reference: &str) -> Result<String, SourceError> {
     Ok(out.trim().to_string())
 }
 
-fn archive(mirror: &Path, commit: &str, into: &Path) -> Result<(), SourceError> {
+async fn archive(mirror: &Path, commit: &str, into: &Path) -> Result<(), SourceError> {
     let args = format!("archive {commit} | tar -x");
     let mut archive = Command::new("git")
         .args(["-C", &mirror.display().to_string(), "archive", "--format=tar", commit])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
-    let tar = Command::new("tar")
-        .args(["-x", "-C", &into.display().to_string()])
-        .stdin(archive.stdout.take().expect("piped"))
-        .output()?;
-    let archive = archive.wait_with_output()?;
+    let stdout: std::process::Stdio = archive.stdout.take().expect("piped").try_into()?;
+    let tar = Command::new("tar").args(["-x", "-C", &into.display().to_string()]).stdin(stdout).output().await?;
+    let archive = archive.wait_with_output().await?;
     if !archive.status.success() || !tar.status.success() {
         let detail = String::from_utf8_lossy(&archive.stderr).trim().to_string()
             + String::from_utf8_lossy(&tar.stderr).trim();
@@ -192,12 +191,12 @@ fn archive(mirror: &Path, commit: &str, into: &Path) -> Result<(), SourceError> 
     Ok(())
 }
 
-fn git(cwd: Option<&Path>, args: &[&str]) -> Result<String, SourceError> {
+async fn git(cwd: Option<&Path>, args: &[&str]) -> Result<String, SourceError> {
     let mut cmd = Command::new("git");
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
-    let out = cmd.args(args).output()?;
+    let out = cmd.args(args).output().await?;
     if !out.status.success() {
         return Err(SourceError::Git {
             args: args.join(" "),
@@ -231,12 +230,12 @@ mod tests {
 
     /// Builds a real repo with two commits and a tag, then resolves it by
     /// default branch, tag, commit and subdir through the cache.
-    #[test]
-    fn resolves_git_through_cache() {
+    #[tokio::test]
+    async fn resolves_git_through_cache() {
         let repo = tempfile::tempdir().unwrap();
         let r = repo.path().display().to_string();
         let sh = |args: &[&str]| {
-            let out = Command::new("git").args(["-C", &r]).args(args).env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t").output().unwrap();
+            let out = std::process::Command::new("git").args(["-C", &r]).args(args).env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t").output().unwrap();
             assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
@@ -255,23 +254,23 @@ mod tests {
         let opts = Options { offline: false, cache_dir: Some(cache.path().to_path_buf()) };
         let url = format!("file://{r}");
 
-        let head = Source::parse(&url, Some("sub".into())).resolve(&opts).unwrap();
+        let head = Source::parse(&url, Some("sub".into())).resolve(&opts).await.unwrap();
         assert_eq!(std::fs::read_to_string(head.root.join("f.txt")).unwrap(), "two");
         assert_eq!(head.git.as_ref().unwrap().commit, second);
 
-        let tagged = Source::parse(&format!("{url}#v1"), Some("sub".into())).resolve(&opts).unwrap();
+        let tagged = Source::parse(&format!("{url}#v1"), Some("sub".into())).resolve(&opts).await.unwrap();
         assert_eq!(std::fs::read_to_string(tagged.root.join("f.txt")).unwrap(), "one");
         assert_eq!(tagged.git.as_ref().unwrap().commit, first);
 
         let offline = Options { offline: true, ..opts.clone() };
-        let by_commit = Source::parse(&format!("{url}#{first}"), None).resolve(&offline).unwrap();
+        let by_commit = Source::parse(&format!("{url}#{first}"), None).resolve(&offline).await.unwrap();
         assert_eq!(std::fs::read_to_string(by_commit.root.join("sub/f.txt")).unwrap(), "one");
 
-        let err = Source::parse(&format!("{url}#nope"), None).resolve(&opts).unwrap_err();
+        let err = Source::parse(&format!("{url}#nope"), None).resolve(&opts).await.unwrap_err();
         assert!(err.to_string().contains("ref `nope` not found"), "{err}");
-        let err = Source::parse(&url, Some("missing".into())).resolve(&opts).unwrap_err();
+        let err = Source::parse(&url, Some("missing".into())).resolve(&opts).await.unwrap_err();
         assert!(matches!(err, SourceError::NoSubdir { .. }));
-        let err = Source::parse("file:///nowhere/x.git", None).resolve(&offline).unwrap_err();
+        let err = Source::parse("file:///nowhere/x.git", None).resolve(&offline).await.unwrap_err();
         assert!(matches!(err, SourceError::Offline { .. }));
     }
 }

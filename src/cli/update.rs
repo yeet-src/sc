@@ -4,8 +4,8 @@ use colored::Colorize;
 
 use super::ui::{Show, confirm, print_outcome, print_plan};
 use super::{Result, Vars, aborted, announce_hook};
-use crate::apply::{self, Existing, Hooks};
-use crate::{source, update};
+use crate::scaffolding::apply::{self, Existing, Hooks};
+use crate::scaffolding::{source, update};
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -40,14 +40,14 @@ pub struct Args {
     offline: bool,
 }
 
-pub fn run(a: Args) -> Result {
+pub async fn run(a: Args) -> Result {
     let opts = update::Options {
         reference: a.reference,
         vars: a.vars.vars,
         allow_shell: a.allow_shell,
         fetch: source::Options { offline: a.offline, cache_dir: None },
     };
-    let prepared = update::prepare(&a.dest, &opts)?;
+    let prepared = update::prepare(&a.dest, &opts).await?;
     let short = |c: &str| c[..c.len().min(12)].to_string();
     match (&prepared.previous, &prepared.plan.template.git) {
         (Some(old), Some(new)) if *old != new.commit => println!(
@@ -69,7 +69,7 @@ pub fn run(a: Args) -> Result {
         return Ok(());
     }
     let hooks = if a.no_hooks { Hooks::Skip } else { Hooks::Run };
-    let outcome = apply::apply(&prepared.plan, &apply::Options { existing: a.existing, hooks }, &mut announce_hook)?;
+    let outcome = apply::apply(&prepared.plan, &apply::Options { existing: a.existing, hooks }, &mut announce_hook).await?;
     print_outcome(&outcome);
     Ok(())
 }

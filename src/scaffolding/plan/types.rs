@@ -5,11 +5,11 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use crate::inputs::Inputs;
-use crate::manifest::{MergeStrategy, Phase};
-use crate::merge::MergeError;
-use crate::render::RenderError;
-use crate::shell::ShellError;
+use crate::scaffolding::inputs::Inputs;
+use crate::scaffolding::manifest::{MergeStrategy, Phase};
+use crate::scaffolding::merge::MergeError;
+use crate::scaffolding::render::RenderError;
+use crate::scaffolding::shell::ShellError;
 
 use super::ANSWERS_FILE;
 
@@ -21,7 +21,7 @@ pub struct PlanOptions {
     pub allow_shell: bool,
     /// Provenance when the template came from git; recorded in the answers
     /// file so `update` can find the same template again.
-    pub git: Option<crate::source::GitInfo>,
+    pub git: Option<crate::scaffolding::source::GitInfo>,
     /// Template-relative directories to skip as control material, such as
     /// sub-templates referenced by `[[mounts]]`.
     pub extra_control: Vec<PathBuf>,
@@ -90,7 +90,7 @@ pub struct TemplateInfo {
     pub description: Option<String>,
     /// The directory planned from (a checkout, for git templates).
     pub source: PathBuf,
-    pub git: Option<crate::source::GitInfo>,
+    pub git: Option<crate::scaffolding::source::GitInfo>,
     pub dest: Option<PathBuf>,
 }
 

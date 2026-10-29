@@ -2,7 +2,7 @@
 //! policy, decided for the whole plan before anything is touched.
 
 use super::{ApplyError, Existing, Options};
-use crate::plan::{Op, OpKind, Origin, Plan, Status};
+use crate::scaffolding::plan::{Op, OpKind, Origin, Plan, Status};
 
 /// Decide what to do with each op before touching anything.
 pub enum Decision<'a> {
